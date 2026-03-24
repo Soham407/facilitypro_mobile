@@ -25,7 +25,7 @@ npx get-shit-done-cc@latest
 | File | Contents |
 |---|---|
 | `.gsd/PROJECT.md` | App identity, tech stack, 7 user roles, web app + Supabase context |
-| `.gsd/REQUIREMENTS.md` | Full PRD — all roles, features, notification routes, NFRs |
+| `.gsd/REQUIREMENTS.md` | Full PRD — all roles, features, all 11 notification routes, NFRs |
 | `.gsd/ROADMAP.md` | P0–P7 build phases with dependencies |
 | `.gsd/STATE.md` | Current phase, completed tasks, next task — updated after every session |
 
@@ -45,10 +45,13 @@ Every Claude Code session starts by loading STATE.md. No re-explanation of the p
 | State | Zustand | Auth state, current user role, session |
 | Server state | TanStack Query | Data fetching, caching, mutations |
 | Offline | AsyncStorage | Guard checklist + emergency contacts |
-| Location | expo-location + expo-task-manager | Geo-fence, selfie attendance, patrol monitoring |
+| Location | expo-location + expo-task-manager | Geo-fence, selfie attendance, background patrol monitoring |
 | Camera | expo-camera | Selfie attendance, visitor photos, service proof photos |
-| Notifications | expo-notifications + FCM | All 11 notification routes from PRD |
+| Image processing | expo-image-manipulator | Compress selfie/job photos before upload to meet 5s upload NFR |
+| Gallery access | expo-image-picker | Gallery access for document vault uploads (P4) |
+| Notifications | expo-notifications + FCM | All 11 notification routes (see Section 10) |
 | SMS fallback | Supabase Edge Functions | Triggered when FCM push undelivered after 60s |
+| Build config | expo-build-properties | Certificate pinning configuration (HTTPS NFR) |
 
 ---
 
@@ -59,17 +62,17 @@ Every Claude Code session starts by loading STATE.md. No re-explanation of the p
 ```
 App
 ├── AuthNavigator
-│   ├── LoginScreen          (Phone number entry)
-│   ├── OTPScreen            (OTP verification)
-│   ├── BiometricSetupScreen (Face ID / Fingerprint enrollment)
-│   ├── ProfilePhotoScreen   (Mandatory for guards)
-│   └── GeoFenceCalibrationScreen (Walk to work location)
+│   ├── LoginScreen               (Phone number entry)
+│   ├── OTPScreen                 (OTP verification)
+│   ├── BiometricSetupScreen      (Face ID / Fingerprint enrollment)
+│   ├── ProfilePhotoScreen        (Mandatory for guards)
+│   └── GeoFenceCalibrationScreen (Walk to work location — sets geo_fence_config record)
 │
 └── RoleNavigator (post-login, role determined from Supabase user profile)
     ├── GuardNavigator
     ├── SupervisorNavigator
     ├── ManagerNavigator
-    ├── HRMSNavigator         (All non-guard staff)
+    ├── HRMSNavigator         (Payroll-administered staff — leave, payslips, documents)
     ├── ServiceNavigator      (AC Tech / Pest Control / Delivery Boy)
     ├── BuyerNavigator
     └── SupplierNavigator
@@ -79,106 +82,113 @@ App
 
 | Feature | Implementation |
 |---|---|
-| SOS Panic Alert | Supabase Realtime broadcast → manager/supervisor push + Edge Function SMS. Queued locally if offline, fires on reconnect |
-| Selfie Attendance | expo-camera capture → GPS validated via RLS (check within 50m of Company Location Master) |
-| Geo-fence monitoring | expo-location + expo-task-manager background task. Auto punch-out if outside geo-fence 15+ min |
-| Inactivity/Patrol Alert | Background location task checks GPS delta every 5 min. If <10m movement in 30 min → Supabase insert → Supervisor push notification |
-| Live Guard Map | Supabase Realtime `postgres_changes` on guard location table, refreshed every 60s |
+| SOS Panic Alert | Single-tap → insert to `sos_events` + Supabase Realtime broadcast → manager/supervisor push + Edge Function SMS. Full offline queue-and-retry in P2 (AsyncStorage → flush on reconnect) |
+| Selfie Attendance | expo-camera capture → GPS validated via RLS (check within 50m of Company Location Master in `geo_fence_config`) |
+| Geo-fence monitoring | expo-location + expo-task-manager background task. Requires `ACCESS_BACKGROUND_LOCATION` on Android 10+ (two-step runtime permission flow in P1). Auto punch-out if outside geo-fence 15+ min |
+| Inactivity/Patrol Alert | Background location task checks GPS delta every 5 min. If <10m movement in 30 min → insert to `sos_events` type=inactivity → Supervisor push notification |
+| Live Guard Map | Supabase Realtime `postgres_changes` on `guard_location_log`, refreshed every 60s |
 | Offline Guard Checklist | Written to AsyncStorage on submission. TanStack Query mutation syncs to Supabase on reconnect |
-| Visitor Entry | Guard captures name/photo/phone/vehicle → Supabase insert → SMS sent to resident (no resident app) |
-| FCM Device Tokens | Stored in `device_tokens` table (Supabase) on first login, updated on each app launch |
+| Visitor Entry | Guard captures name/photo/phone/vehicle → insert to `visitor_log` → SMS sent to resident (no resident app) |
+| FCM Device Tokens | Stored in `device_tokens` table on first login, updated on each app launch |
+| Session Expiry | Zustand session timer reset on every user interaction. Background task checks last-activity timestamp; calls `supabase.auth.signOut()` after 8 hours of inactivity |
 
 ---
 
 ## 5. Build Roadmap
 
 ### Phase Dependencies
-P2 and P4 can be built in parallel. All other phases are sequential.
+
+P1 is a prerequisite for both P2 and P4, which can run in parallel.
+P5 requires both P2 (geo-fence + camera patterns) and P4 (HRMS attendance) to be complete.
 
 ```
-P0 → P1 → P2 ──┐
-               ├──→ P3 → P6 → P7
-          P4 ──┘
-               └──→ P5
+P0 → P1 ──→ P2 ──────────────┐
+      │                       ├──→ P3 → P6 → P7
+      └──→ P4 ──→ P5 ─────────┘
 ```
 
 ### Phase Definitions
 
 #### P0 — GSD Setup (prerequisite)
 - Install GSD via npx
-- Run "New Project" flow — feed PRD to generate REQUIREMENTS.md
+- Run "New Project" flow — feed PRD to generate REQUIREMENTS.md (must include all 11 notification routes from PRD Section 8)
 - Share web app code → GSD agents map existing Supabase schema to PRD features
-- Identify ~20% mobile-specific tables still needed (device_tokens, geo_fence_config, offline_sync_queue)
+- Identify all mobile-specific tables still needed (see Section 6 for full list — verify `sos_events` exists in web schema or create it)
 - Output: All 4 GSD project files populated and committed
 
 #### P1 — Foundation
 - OTP login (phone number → Supabase Auth)
 - Biometric unlock on subsequent sessions
 - Profile photo capture (mandatory for guards)
-- Geo-fence calibration (first-time setup)
+- Geo-fence calibration (first-time setup → writes to `geo_fence_config`)
 - Role-based routing → correct navigator per role
-- Session expiry: 8-hour inactivity auto-logout
+- Session expiry: 8-hour inactivity auto-logout (Zustand timer + background signOut)
+- Android background location: implement two-step runtime permission flow (`ACCESS_FINE_LOCATION` first, then `ACCESS_BACKGROUND_LOCATION`)
+- Install and configure `expo-build-properties` for certificate pinning
 
 #### P2 — Security Guard App
 - Home screen (SOS button, clock in/out, checklist shortcut, emergency contacts)
-- SOS Panic System (single-tap, GPS snapshot, photo, Realtime broadcast, offline queue)
+- SOS Panic System: single-tap → `sos_events` insert + GPS snapshot + auto photo + Realtime broadcast. **Full offline queue-and-retry implemented here** (AsyncStorage queue, flush on reconnect). Guards are offline-safe from P2 onwards.
 - Selfie clock in/out with geo-fence validation
-- Daily Operational Checklist (online + offline, photo evidence, submit + lock)
+- Daily Operational Checklist (online + offline via AsyncStorage, photo evidence, submit + lock)
 - Inactivity/Patrol Alert background task ("I am on duty" reset button)
-- Visitor Entry Logging (name, photo, phone, vehicle, flat lookup, SMS to resident)
+- Visitor Entry Logging (name, photo, phone, vehicle → `visitor_log`, SMS to resident)
 - Daily/Frequent Visitor list (maids, drivers, milkmen)
-- Emergency Contact Directory (one-tap dial, manager-configured)
+- Emergency Contact Directory (one-tap dial, manager-configured, cached offline)
 
 #### P3 — Supervisor + Society Manager App
-- Live Guard Location Map (Realtime, 60s refresh)
+- Live Guard Location Map (Realtime on `guard_location_log`, 60s refresh)
 - Checklist Status Board (green/red per guard)
-- Panic Log Feed (active SOS alerts, acknowledge flow)
-- Visitor Stats dashboard (today/week, by gate)
+- Panic Log Feed (reads from `sos_events`, active SOS alerts, acknowledge flow)
+- Visitor Stats dashboard (today/week, by gate — reads from `visitor_log`)
 - Staff Attendance log (check-in/out times + GPS)
 - Employee Behaviour Ticket (staff dropdown, category, severity, evidence upload)
 - Material Quality Ticket (condition status, photo, batch number)
 - Material Quantity Ticket (ordered vs received, shortage auto-calc)
 - Return Ticket (RTV) generation
 
-#### P4 — HRMS Mobile (all staff)
-- Selfie attendance with geo-fence (same mechanism as guard clock-in)
+#### P4 — HRMS Mobile (payroll-administered staff)
+- Selfie attendance with geo-fence (same mechanism as guard clock-in, reuses P2 patterns)
 - Auto punch-out flag when outside geo-fence 15+ min
 - Leave application (type, dates, reason)
 - Leave approval workflow (supervisor push notification, approve/reject)
 - Leave balance display
 - Payslip view + PDF download (last 12 months)
 - Document vault (Aadhar, PAN, Voter ID, PSARA cert, Police Verification)
-- Document upload from camera or gallery
+- Document upload from camera (`expo-camera`) or gallery (`expo-image-picker`)
 
 #### P5 — Service Apps
-- **AC Technician:** Receive request notification, Start Work (GPS + timestamp), Before photo, parts used (inventory deduction), After photo, Complete
+Depends on P2 (geo-fence + camera patterns) and P4 (HRMS attendance mechanism).
+- **AC Technician:** Receive request notification, Start Work (GPS + timestamp), Before photo (`expo-camera`), parts used (inventory deduction), After photo, Complete
 - **Pest Control:** PPE checklist (mandatory before job start), selfie + GPS attendance, chemical material request + approval, Before/After photos, resident notification auto-send
 - **Delivery Boy:** View assigned orders, status updates (Picked Up → In Transit → Delivered), delivery proof photo
 
 #### P6 — Commerce Apps
-- **Buyer App:** Place order (service category + grade/role + quantity + duration), order tracking (full status lifecycle), accept/reject quotation, invoice download, feedback (star + text, required to close order)
+- **Buyer App:** Place order (service category + grade/role + quantity + duration), order tracking (full status lifecycle from PRD Appendix), accept/reject quotation, invoice download, feedback (star + text, required to close order)
 - **Supplier App:** Indent inbox, accept/reject indent, PO acknowledgement, dispatch update (vehicle number + ETA), received note upload, bill submission, payment status tracking
 
 #### P7 — Notifications + Polish
 - FCM device token registration on login
-- All 11 notification routes from PRD Section 8 (correct priorities, bypass DND for SOS)
+- All 11 notification routes (see Section 10 for full list — implement each with correct priority + DND bypass for SOS/Critical)
 - SMS fallback via Edge Function (60s delay trigger for all High/Critical notifications)
-- SOS offline queue (AsyncStorage → fires on reconnect)
-- Emergency contacts offline cache
+- Verify SOS offline queue under network interruption scenarios (queue built in P2, validated here)
 - Performance audit (3s launch, 5s selfie upload targets from NFR 9.3)
 - Accessibility audit (44dp tap targets, high-contrast, OS text size)
 
 ---
 
-## 6. Mobile-Specific Supabase Tables to Add
+## 6. Mobile-Specific Supabase Tables
 
-| Table | Purpose |
-|---|---|
-| `device_tokens` | FCM tokens per user, updated on each app launch |
-| `geo_fence_config` | Per-employee registered work location (lat/lng + 50m radius) |
-| `offline_sync_queue` | Stores failed mutations (checklist submissions, SOS events) for retry on reconnect |
-| `guard_location_log` | Continuous GPS positions during active shifts (inactivity detection + live map) |
-| `visitor_log` | Visitor entries with photo URL, flat destination, SMS delivery status |
+Verify each against the existing web app schema before creating. Only create tables that do not already exist.
+
+| Table | Purpose | Note |
+|---|---|---|
+| `device_tokens` | FCM tokens per user, updated on each app launch | Likely new — mobile-only |
+| `geo_fence_config` | Per-employee registered work location (lat/lng + 50m radius) | May exist in web schema — verify |
+| `offline_sync_queue` | Stores failed mutations (checklist submissions, SOS events) for retry on reconnect | New — mobile-only |
+| `guard_location_log` | Continuous GPS positions during active shifts (inactivity detection + live map feed) | May exist in web schema — verify |
+| `visitor_log` | Visitor entries with photo URL, flat destination, SMS delivery status | Likely exists in web schema — verify |
+| `sos_events` | SOS incident records: guard ID, GPS, photo URL, timestamp, type (panic/inactivity), acknowledge status | Must verify — P3 Panic Log Feed reads from here |
 
 ---
 
@@ -211,9 +221,32 @@ Per PRD Section 10:
 | Launch < 3s | Splash screen + font preload already configured |
 | Selfie upload < 5s | expo-image-manipulator compression before upload |
 | Push delivery < 5s (SOS) | FCM high-priority channel + bypass DND flag |
-| HTTPS + cert pinning | Supabase client config + expo-build-properties |
+| HTTPS + cert pinning | Supabase client config + expo-build-properties (install in P1) |
 | Role-based access | Supabase RLS policies per table |
 | Visitor data purge 90 days | Supabase scheduled Edge Function |
 | 44dp tap targets | Design system enforcement in all interactive components |
 | High-contrast support | DarkColors already defined in src/constants/colors.ts |
 | OS text size | Avoid fixed font sizes — use sp units / RN scaling |
+| Offline data at-rest encryption | expo-secure-store for sensitive offline fields (SOS queue GPS/photo, emergency contacts). AsyncStorage for non-sensitive checklist data only |
+| 8-hour inactivity auto-logout | Zustand session timer reset on user interaction; background task checks last-activity timestamp and calls supabase.auth.signOut() |
+| Android background location | Two-step runtime permission flow in P1: request ACCESS_FINE_LOCATION first, then ACCESS_BACKGROUND_LOCATION. Add ACCESS_BACKGROUND_LOCATION to app.json android.permissions |
+
+---
+
+## 10. Notification Routes (All 11)
+
+Delivered via FCM (exceptions noted in table). SMS fallback triggered by Edge Function if push undelivered after 60 seconds.
+
+| # | Notification | Sender → Recipient | Priority | DND Bypass |
+|---|---|---|---|---|
+| 1 | SOS / Panic Alert | Guard → Manager + Supervisor | CRITICAL | Yes |
+| 2 | Visitor at Gate | Guard → Resident of destination flat (SMS only — no resident app) | High | No |
+| 3 | Inactivity Alert | System → Supervisor (30 min no GPS movement) | High | No |
+| 4 | Checklist Reminder | System → Guard (if checklist not opened by 9:00 AM) | Medium | No |
+| 5 | Order Status Change | System → Buyer (every workflow status transition) | Medium | No |
+| 6 | New Indent | System → Supplier (when admin forwards indent) | High | No |
+| 7 | Material Delivery | Guard → Manager (when delivery vehicle logged at gate) | High | No |
+| 8 | Leave Decision | System → Employee (supervisor approves/rejects) | Medium | No |
+| 9 | Payslip Ready | System → Employee (monthly payslip generated) | Low | No |
+| 10 | Pest Control Alert | System → Resident (SMS only — 2 hours before treatment) | High | No |
+| 11 | Low Stock Alert | System → Manager (inventory item below reorder level) | Medium | No |
