@@ -311,7 +311,11 @@ async function persistOversightStore(get: () => OversightStore) {
   await saveOversightState(buildPersistedState(get()));
 }
 
-function moveLocation(value: number, offset: number) {
+function moveLocation(value: number | null, offset: number) {
+  if (typeof value !== 'number') {
+    return null;
+  }
+
   return Math.round((value + offset) * 1000000) / 1000000;
 }
 

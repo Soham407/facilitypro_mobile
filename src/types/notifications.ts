@@ -11,21 +11,32 @@ export type NotificationRoute =
   | 'leave_decision'
   | 'payslip_ready'
   | 'pest_control_alert'
-  | 'low_stock_alert';
+  | 'low_stock_alert'
+  | 'general_update';
 
 export type NotificationPriority = 'critical' | 'high' | 'medium' | 'low';
 export type NotificationDeliveryMode = 'push' | 'sms';
-export type NotificationDeliveryState = 'inbox_only' | 'push_queued' | 'delivered';
+export type NotificationDeliveryState =
+  | 'created'
+  | 'inbox_only'
+  | 'push_queued'
+  | 'delivered'
+  | 'failed';
 export type NotificationFallbackState =
   | 'not_applicable'
   | 'armed'
   | 'queued'
-  | 'not_needed';
+  | 'not_needed'
+  | 'sent'
+  | 'failed';
 export type NotificationPermissionStatus = 'undetermined' | 'denied' | 'granted';
 export type NotificationPlatform = 'android' | 'ios' | 'unknown';
 
 export interface NotificationRecord {
   id: string;
+  backendId: string | null;
+  backendType: string | null;
+  actionUrl: string | null;
   route: NotificationRoute;
   title: string;
   body: string;

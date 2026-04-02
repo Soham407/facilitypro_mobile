@@ -24,8 +24,11 @@ function getToneColor(status: OversightGuardRecord['status'], colors: ReturnType
 
 export function LiveGuardBoard({ guards }: LiveGuardBoardProps) {
   const { colors } = useAppTheme();
+  const positionedGuards = guards.filter(
+    (guard) => typeof guard.latitude === 'number' && typeof guard.longitude === 'number',
+  );
 
-  if (!guards.length) {
+  if (!positionedGuards.length) {
     return (
       <View style={[styles.board, styles.emptyBoard, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
         <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No live guard positions yet</Text>
@@ -36,8 +39,8 @@ export function LiveGuardBoard({ guards }: LiveGuardBoardProps) {
     );
   }
 
-  const latitudes = guards.map((guard) => guard.latitude);
-  const longitudes = guards.map((guard) => guard.longitude);
+  const latitudes = positionedGuards.map((guard) => guard.latitude as number);
+  const longitudes = positionedGuards.map((guard) => guard.longitude as number);
   const minLatitude = Math.min(...latitudes);
   const maxLatitude = Math.max(...latitudes);
   const minLongitude = Math.min(...longitudes);
@@ -52,9 +55,9 @@ export function LiveGuardBoard({ guards }: LiveGuardBoardProps) {
       <Text style={[styles.sideLabelRight, { color: colors.mutedForeground }]}>East</Text>
       <Text style={[styles.boardLabelBottom, { color: colors.mutedForeground }]}>South</Text>
 
-      {guards.map((guard) => {
-        const top = 12 + ((guard.latitude - minLatitude) / latitudeRange) * 76;
-        const left = 10 + ((guard.longitude - minLongitude) / longitudeRange) * 80;
+      {positionedGuards.map((guard) => {
+        const top = 12 + (((guard.latitude as number) - minLatitude) / latitudeRange) * 76;
+        const left = 10 + (((guard.longitude as number) - minLongitude) / longitudeRange) * 80;
         const toneColor = getToneColor(guard.status, colors);
 
         return (

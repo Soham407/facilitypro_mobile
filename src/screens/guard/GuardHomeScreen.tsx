@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { useQuery } from '@tanstack/react-query';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { AlertTriangle, ClipboardList, MapPin, ShieldAlert, Users } from 'lucide-react-native';
@@ -14,6 +15,7 @@ import { BorderRadius, Spacing } from '../../constants/spacing';
 import { FontFamily, FontSize } from '../../constants/typography';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { capturePhoto } from '../../lib/media';
+import { fetchGuardVisitors, isPreviewProfile, startGuardPanicAlert } from '../../lib/mobileBackend';
 import {
   calculateDistanceMeters,
   getCurrentLocationFix,
@@ -64,6 +66,8 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
   const resetPatrolClock = useGuardStore((state) => state.resetPatrolClock);
   const flushOfflineQueue = useGuardStore((state) => state.flushOfflineQueue);
   const signOut = useAppStore((state) => state.signOut);
+  const previewMode = isPreviewProfile(profile);
+  const usePreviewFlow = previewMode || isOfflineMode;
 
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const sosCameraRef = useRef<CameraView | null>(null);
@@ -77,9 +81,19 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
     null,
   );
 
+  const visitorsQuery = useQuery({
+    queryKey: ['guard', 'visitors', profile?.userId],
+    queryFn: () => fetchGuardVisitors(true),
+    enabled: Boolean(profile?.userId) && !usePreviewFlow,
+    refetchInterval: 10000,
+  });
+
   const pendingVisitors = useMemo(
-    () => visitorLog.filter((entry) => entry.status === 'inside').length,
-    [visitorLog],
+    () =>
+      usePreviewFlow
+        ? visitorLog.filter((entry) => entry.status === 'inside').length
+        : (visitorsQuery.data ?? []).filter((entry) => entry.status === 'inside').length,
+    [usePreviewFlow, visitorLog, visitorsQuery.data],
   );
 
   const recentSosCount = useMemo(() => getTodayCount(sosEvents), [sosEvents]);
@@ -215,6 +229,19 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
     note: string;
     photoUri: string;
   }) => {
+    if (!usePreviewFlow) {
+      const backendResult = await startGuardPanicAlert({
+        alertType: 'panic',
+        note: options.note,
+        location: options.location,
+        photoUri: options.photoUri,
+      });
+
+      if (backendResult?.success === false) {
+        throw new Error(backendResult.error ?? 'SOS could not be sent.');
+      }
+    }
+
     const result = await triggerSos({
       alertType: 'panic',
       note: options.note,
@@ -223,9 +250,9 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
     });
 
     setMessage(
-      result.queued
+      usePreviewFlow && result.queued
         ? 'SOS recorded offline with photo evidence. It is waiting in the sync queue.'
-        : 'SOS alert recorded with photo evidence and marked ready for supervisor escalation.',
+        : 'SOS alert recorded with live location and sent into the supervisor escalation flow.',
     );
   };
 

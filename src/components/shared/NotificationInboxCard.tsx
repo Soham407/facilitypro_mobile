@@ -37,7 +37,7 @@ function formatTimestamp(value: string) {
 
 export function NotificationInboxCard({
   title = 'Notification centre',
-  description = 'Notification previews are stored here so each role can test the Phase 7 delivery flows locally.',
+  description = 'Notification records are stored here so each role can track live delivery state alongside local previews when needed.',
   actions = [],
   maxItems = 3,
 }: NotificationInboxCardProps) {
@@ -130,7 +130,7 @@ export function NotificationInboxCard({
         ))
       ) : (
         <Text style={[styles.caption, { color: colors.mutedForeground }]}>
-          No notification previews have been queued for this workspace yet.
+          No notifications have been captured for this workspace yet.
         </Text>
       )}
 

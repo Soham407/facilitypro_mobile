@@ -37,6 +37,12 @@ export type GuardTabParamList = {
   GuardContacts: undefined;
 };
 
+export type ResidentTabParamList = {
+  ResidentHome: undefined;
+  ResidentApprovals: undefined;
+  ResidentNotifications: undefined;
+};
+
 export type ServiceTabParamList = {
   ServiceHome: undefined;
   ServiceTasks: undefined;

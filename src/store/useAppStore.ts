@@ -118,6 +118,15 @@ function createDevPreviewIdentity(role: AppRole) {
         guardId: null,
         guardCode: null,
       };
+    case 'resident':
+      return {
+        userId: 'dev-preview-resident',
+        phone: '+914141414141',
+        fullName: 'Preview Resident',
+        employeeCode: null,
+        guardId: null,
+        guardCode: null,
+      };
     case 'vendor':
       return {
         userId: 'dev-preview-vendor',
@@ -182,6 +191,7 @@ function createDevPreviewGeoCalibration(): GeoCalibrationRecord {
 
 function createDevPreviewProfile(session: Session, role: AppRole): AppUserProfile {
   const isGuard = role === 'security_guard';
+  const isResident = role === 'resident';
   const identity = createDevPreviewIdentity(role);
 
   return {
@@ -195,7 +205,7 @@ function createDevPreviewProfile(session: Session, role: AppRole): AppUserProfil
       previewMode: true,
       previewRole: role,
     },
-    employeeId: 'dev-preview-employee',
+    employeeId: isResident ? null : 'dev-preview-employee',
     employeeCode: identity.employeeCode,
     employeePhotoUrl: 'dev-preview-photo.jpg',
     guardId: isGuard ? identity.guardId : null,

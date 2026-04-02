@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import { AlertTriangle, ClipboardList, ShieldCheck, Users } from 'lucide-react-native';
 
@@ -13,6 +14,12 @@ import { ScreenShell } from '../../components/shared/ScreenShell';
 import { Spacing } from '../../constants/spacing';
 import { FontFamily, FontSize } from '../../constants/typography';
 import { useAppTheme } from '../../hooks/useAppTheme';
+import {
+  fetchOversightAlertFeed,
+  fetchOversightLiveGuards,
+  fetchOversightVisitorStats,
+  isPreviewProfile,
+} from '../../lib/mobileBackend';
 import type { OversightTabParamList } from '../../navigation/types';
 import { useAppStore } from '../../store/useAppStore';
 import { useOversightStore } from '../../store/useOversightStore';
@@ -50,17 +57,58 @@ function formatValue(value: string | null) {
 export function OversightHomeScreen(_props: OversightHomeScreenProps) {
   const { colors } = useAppTheme();
   const signOut = useAppStore((state) => state.signOut);
-  const role = useOversightStore((state) => state.role);
-  const guards = useOversightStore((state) => state.guards);
-  const alerts = useOversightStore((state) => state.alerts);
-  const visitorStats = useOversightStore((state) => state.visitorStats);
-  const tickets = useOversightStore((state) => state.tickets);
-  const refreshedAt = useOversightStore((state) => state.refreshedAt);
-  const refreshFeed = useOversightStore((state) => state.refreshFeed);
+  const profile = useAppStore((state) => state.profile);
+  const previewMode = isPreviewProfile(profile);
+  const role = profile?.role === 'society_manager' ? 'society_manager' : 'security_supervisor';
+  const previewGuards = useOversightStore((state) => state.guards);
+  const previewAlerts = useOversightStore((state) => state.alerts);
+  const previewVisitorStats = useOversightStore((state) => state.visitorStats);
+  const previewTickets = useOversightStore((state) => state.tickets);
+  const previewRefreshedAt = useOversightStore((state) => state.refreshedAt);
+  const refreshPreviewFeed = useOversightStore((state) => state.refreshFeed);
+  const queryClient = useQueryClient();
   const [message, setMessage] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  const guardsQuery = useQuery({
+    queryKey: ['oversight', 'live-guards', profile?.userId],
+    queryFn: fetchOversightLiveGuards,
+    enabled: Boolean(profile?.userId) && !previewMode,
+    refetchInterval: 60000,
+  });
+
+  const alertsQuery = useQuery({
+    queryKey: ['oversight', 'alerts', profile?.userId],
+    queryFn: fetchOversightAlertFeed,
+    enabled: Boolean(profile?.userId) && !previewMode,
+    refetchInterval: 30000,
+  });
+
+  const visitorStatsQuery = useQuery({
+    queryKey: ['oversight', 'visitor-stats', profile?.userId],
+    queryFn: fetchOversightVisitorStats,
+    enabled: Boolean(profile?.userId) && !previewMode,
+    refetchInterval: 60000,
+  });
+
   const copy = ROLE_COPY[role];
+  const guards = previewMode ? previewGuards : guardsQuery.data ?? [];
+  const alerts = previewMode ? previewAlerts : alertsQuery.data ?? [];
+  const visitorStats = previewMode ? previewVisitorStats : visitorStatsQuery.data ?? [];
+  const refreshedAt = previewMode
+    ? previewRefreshedAt
+    : [guardsQuery.dataUpdatedAt, alertsQuery.dataUpdatedAt, visitorStatsQuery.dataUpdatedAt]
+        .filter(Boolean)
+        .sort()
+        .at(-1)
+        ? new Date(
+            [guardsQuery.dataUpdatedAt, alertsQuery.dataUpdatedAt, visitorStatsQuery.dataUpdatedAt]
+              .filter(Boolean)
+              .sort()
+              .at(-1) as number,
+          ).toISOString()
+        : null;
+
   const guardsOnDuty = useMemo(
     () => guards.filter((guard) => guard.status === 'on_duty' || guard.status === 'breach').length,
     [guards],
@@ -83,10 +131,9 @@ export function OversightHomeScreen(_props: OversightHomeScreenProps) {
     () => visitorStats.reduce((sum, gate) => sum + gate.visitorsToday, 0),
     [visitorStats],
   );
-  const openTickets = useMemo(
-    () => tickets.filter((ticket) => ticket.status !== 'closed').length,
-    [tickets],
-  );
+  const openTickets = previewMode
+    ? previewTickets.filter((ticket) => ticket.status !== 'closed').length
+    : 0;
   const attentionItems = useMemo(
     () =>
       guards.filter(
@@ -103,8 +150,21 @@ export function OversightHomeScreen(_props: OversightHomeScreenProps) {
     setMessage(null);
 
     try {
-      await refreshFeed();
-      setMessage('Live guard feed refreshed for the latest patrol snapshot.');
+      if (previewMode) {
+        await refreshPreviewFeed();
+      } else {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['oversight', 'live-guards', profile?.userId] }),
+          queryClient.invalidateQueries({ queryKey: ['oversight', 'alerts', profile?.userId] }),
+          queryClient.invalidateQueries({ queryKey: ['oversight', 'visitor-stats', profile?.userId] }),
+        ]);
+      }
+
+      setMessage(
+        previewMode
+          ? 'Preview oversight feed refreshed.'
+          : 'Live oversight feed refreshed from backend summaries.',
+      );
     } finally {
       setIsRefreshing(false);
     }
@@ -173,7 +233,11 @@ export function OversightHomeScreen(_props: OversightHomeScreenProps) {
             icon={<ShieldCheck color={colors.warning} size={20} />}
             label="Visitors today"
             value={String(visitorsToday)}
-            caption={`${openTickets} active issue tickets`}
+            caption={
+              previewMode
+                ? `${openTickets} active issue tickets`
+                : 'Realtime visitor stats from society gates'
+            }
           />
         </View>
       </View>
@@ -181,7 +245,9 @@ export function OversightHomeScreen(_props: OversightHomeScreenProps) {
       <InfoCard>
         <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Live guard location board</Text>
         <Text style={[styles.heroText, { color: colors.mutedForeground }]}>
-          This approximates the active site map using the latest guard positions and patrol status.
+          {previewMode
+            ? 'Preview mode approximates the active site map.'
+            : 'This board is driven by the latest guard position data from the backend oversight feed.'}
         </Text>
         <LiveGuardBoard guards={guards} />
       </InfoCard>
@@ -219,24 +285,32 @@ export function OversightHomeScreen(_props: OversightHomeScreenProps) {
 
       <NotificationInboxCard
         title="Control-room notifications"
-        description="Phase 7 previews the live alert routes that reach supervisors and managers with push delivery and fallback logic."
-        actions={[
-          {
-            label: 'Preview SOS alert',
-            route: 'sos_alert',
-            variant: 'secondary',
-          },
-          {
-            label: 'Preview inactivity alert',
-            route: 'inactivity_alert',
-            variant: 'ghost',
-          },
-          {
-            label: 'Preview low stock alert',
-            route: 'low_stock_alert',
-            variant: 'ghost',
-          },
-        ]}
+        description={
+          previewMode
+            ? 'Preview routes still work here for local demo validation.'
+            : 'This inbox now mirrors the live backend notification table and Realtime delivery feed.'
+        }
+        actions={
+          previewMode
+            ? [
+                {
+                  label: 'Preview SOS alert',
+                  route: 'sos_alert',
+                  variant: 'secondary',
+                },
+                {
+                  label: 'Preview inactivity alert',
+                  route: 'inactivity_alert',
+                  variant: 'ghost',
+                },
+                {
+                  label: 'Preview low stock alert',
+                  route: 'low_stock_alert',
+                  variant: 'ghost',
+                },
+              ]
+            : []
+        }
       />
     </ScreenShell>
   );

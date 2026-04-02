@@ -25,8 +25,8 @@ export interface OversightGuardRecord {
   checklistCompleted: number;
   checklistTotal: number;
   currentShiftLabel: string;
-  latitude: number;
-  longitude: number;
+  latitude: number | null;
+  longitude: number | null;
   visitorsHandledToday: number;
 }
 

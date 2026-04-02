@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 
+import { isPreviewProfile } from './mobileBackend';
 import { supabase } from './supabase';
 import type { AppRole, AppUserProfile } from '../types/app';
 import type {
@@ -107,6 +108,13 @@ const ROUTE_DEFINITIONS: Record<NotificationRoute, NotificationRouteDefinition> 
     dndBypass: false,
     deliveryModes: ['push'],
   },
+  general_update: {
+    title: 'Operational Update',
+    body: 'A new update is available in your FacilityPro inbox.',
+    priority: 'medium',
+    dndBypass: false,
+    deliveryModes: ['push'],
+  },
 };
 
 function createId(prefix: string) {
@@ -118,28 +126,43 @@ export function getNotificationDefinition(route: NotificationRoute) {
 }
 
 export function buildNotificationRecord(options: {
+  id?: string;
+  backendId?: string | null;
+  backendType?: string | null;
+  actionUrl?: string | null;
   route: NotificationRoute;
   title?: string;
   body?: string;
+  priority?: NotificationPriority;
+  createdAt?: string;
+  readAt?: string | null;
+  deliveryState?: NotificationRecord['deliveryState'];
+  fallbackState?: NotificationRecord['fallbackState'];
   metadata?: Record<string, string | number | boolean | null>;
 }): NotificationRecord {
   const definition = getNotificationDefinition(options.route);
 
   return {
-    id: createId('notification'),
+    id: options.id ?? createId('notification'),
+    backendId: options.backendId ?? null,
+    backendType: options.backendType ?? null,
+    actionUrl: options.actionUrl ?? null,
     route: options.route,
     title: options.title ?? definition.title,
     body: options.body ?? definition.body,
-    priority: definition.priority,
-    createdAt: new Date().toISOString(),
-    readAt: null,
+    priority: options.priority ?? definition.priority,
+    createdAt: options.createdAt ?? new Date().toISOString(),
+    readAt: options.readAt ?? null,
     dndBypass: definition.dndBypass,
     deliveryModes: definition.deliveryModes,
-    deliveryState: definition.deliveryModes.includes('push') ? 'push_queued' : 'inbox_only',
+    deliveryState:
+      options.deliveryState ??
+      (definition.deliveryModes.includes('push') ? 'push_queued' : 'inbox_only'),
     fallbackState:
-      definition.deliveryModes.includes('sms') && definition.deliveryModes.includes('push')
+      options.fallbackState ??
+      (definition.deliveryModes.includes('sms') && definition.deliveryModes.includes('push')
         ? 'armed'
-        : 'not_applicable',
+        : 'not_applicable'),
     metadata: options.metadata ?? {},
   };
 }
@@ -196,6 +219,10 @@ export function createPreviewNotification(route: NotificationRoute, profile: App
     low_stock_alert: {
       title: 'Low Stock Alert',
       body: `A monitored inventory item at ${locationName} fell below the reorder threshold.`,
+    },
+    general_update: {
+      title: 'Operational Update',
+      body: `A fresh update for ${locationName} is now available in the inbox.`,
     },
   };
 
@@ -303,8 +330,135 @@ export async function registerForDeviceNotifications() {
   }
 }
 
-function isPreviewProfile(profile: AppUserProfile | null) {
-  return profile?.userId.startsWith('dev-preview-') ?? false;
+function normalizeBackendPriority(value: string | null | undefined): NotificationPriority {
+  if (value === 'critical' || value === 'high' || value === 'low') {
+    return value;
+  }
+
+  return 'medium';
+}
+
+function mapBackendTypeToRoute(value: string | null | undefined): NotificationRoute {
+  switch (value) {
+    case 'panic':
+    case 'panic_acknowledged':
+    case 'panic_resolved':
+      return 'sos_alert';
+    case 'visitor_at_gate':
+      return 'visitor_at_gate';
+    case 'inactivity':
+    case 'geo_fence_breach':
+      return 'inactivity_alert';
+    case 'checklist_reminder':
+      return 'checklist_reminder';
+    case 'order_status_change':
+      return 'order_status_change';
+    case 'new_indent':
+      return 'new_indent';
+    case 'material_delivery':
+      return 'material_delivery';
+    case 'leave_decision':
+      return 'leave_decision';
+    case 'payslip_ready':
+      return 'payslip_ready';
+    case 'pest_control_alert':
+      return 'pest_control_alert';
+    case 'low_stock_alert':
+      return 'low_stock_alert';
+    default:
+      return 'general_update';
+  }
+}
+
+export interface BackendNotificationRow {
+  id: string;
+  title: string;
+  body: string;
+  type: string;
+  priority: string | null;
+  is_read: boolean;
+  read_at: string | null;
+  action_url: string | null;
+  created_at: string;
+  delivery_state?: string | null;
+  fallback_state?: string | null;
+  data?: Record<string, string | number | boolean | null> | null;
+}
+
+export function mapBackendNotificationRecord(row: BackendNotificationRow): NotificationRecord {
+  const route = mapBackendTypeToRoute(row.type);
+
+  return buildNotificationRecord({
+    id: row.id,
+    backendId: row.id,
+    backendType: row.type,
+    actionUrl: row.action_url,
+    route,
+    title: row.title,
+    body: row.body,
+    priority: normalizeBackendPriority(row.priority),
+    createdAt: row.created_at,
+    readAt: row.is_read ? row.read_at ?? row.created_at : null,
+    deliveryState:
+      row.delivery_state === 'created' ||
+      row.delivery_state === 'inbox_only' ||
+      row.delivery_state === 'push_queued' ||
+      row.delivery_state === 'delivered' ||
+      row.delivery_state === 'failed'
+        ? row.delivery_state
+        : undefined,
+    fallbackState:
+      row.fallback_state === 'not_applicable' ||
+      row.fallback_state === 'armed' ||
+      row.fallback_state === 'queued' ||
+      row.fallback_state === 'not_needed' ||
+      row.fallback_state === 'sent' ||
+      row.fallback_state === 'failed'
+        ? row.fallback_state
+        : undefined,
+    metadata:
+      typeof row.data === 'object' && row.data !== null
+        ? row.data
+        : {},
+  });
+}
+
+export async function fetchRemoteNotifications(profile: AppUserProfile | null) {
+  if (!profile?.userId || isPreviewProfile(profile)) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from('notifications')
+    .select(
+      'id, title, body, type, priority, is_read, read_at, action_url, created_at, delivery_state, fallback_state, data',
+    )
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (error) {
+    throw error;
+  }
+
+  return ((data ?? []) as BackendNotificationRow[]).map(mapBackendNotificationRecord);
+}
+
+export async function markRemoteNotificationRead(backendId: string | null) {
+  if (!backendId) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from('notifications')
+    .update({
+      is_read: true,
+      read_at: new Date().toISOString(),
+    })
+    .eq('id', backendId);
+
+  if (error) {
+    throw error;
+  }
 }
 
 async function updateUserNotificationPreference(
@@ -349,19 +503,11 @@ export async function persistRemoteDeviceToken(
   }
 
   try {
-    const { error } = await supabase.from('device_tokens').upsert(
-      {
-        user_id: profile.userId,
-        role: profile.role,
-        platform,
-        token,
-        is_active: true,
-        updated_at: new Date().toISOString(),
-      },
-      {
-        onConflict: 'token',
-      },
-    );
+    const { error } = await supabase.rpc('upsert_push_token', {
+      p_device_type: platform,
+      p_token: token,
+      p_token_type: 'fcm',
+    });
 
     if (error) {
       throw error;

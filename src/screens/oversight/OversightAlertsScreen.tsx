@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import { ShieldAlert, Siren } from 'lucide-react-native';
 
@@ -10,7 +11,14 @@ import { ScreenShell } from '../../components/shared/ScreenShell';
 import { Spacing } from '../../constants/spacing';
 import { FontFamily, FontSize } from '../../constants/typography';
 import { useAppTheme } from '../../hooks/useAppTheme';
+import {
+  acknowledgeMobilePanicAlert,
+  fetchOversightAlertFeed,
+  isPreviewProfile,
+  resolveMobilePanicAlert,
+} from '../../lib/mobileBackend';
 import type { OversightTabParamList } from '../../navigation/types';
+import { useAppStore } from '../../store/useAppStore';
 import { useOversightStore } from '../../store/useOversightStore';
 
 type OversightAlertsScreenProps = BottomTabScreenProps<OversightTabParamList, 'OversightAlerts'>;
@@ -26,11 +34,40 @@ function formatValue(value: string) {
 
 export function OversightAlertsScreen(_props: OversightAlertsScreenProps) {
   const { colors } = useAppTheme();
-  const alerts = useOversightStore((state) => state.alerts);
+  const profile = useAppStore((state) => state.profile);
+  const previewMode = isPreviewProfile(profile);
+  const previewAlerts = useOversightStore((state) => state.alerts);
   const acknowledgeAlert = useOversightStore((state) => state.acknowledgeAlert);
   const resolveAlert = useOversightStore((state) => state.resolveAlert);
+  const queryClient = useQueryClient();
   const [message, setMessage] = useState<string | null>(null);
 
+  const alertsQuery = useQuery({
+    queryKey: ['oversight', 'alerts', profile?.userId],
+    queryFn: fetchOversightAlertFeed,
+    enabled: Boolean(profile?.userId) && !previewMode,
+    refetchInterval: 30000,
+  });
+
+  const acknowledgeMutation = useMutation({
+    mutationFn: async (alertId: string) => acknowledgeMobilePanicAlert(alertId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ['oversight', 'alerts', profile?.userId],
+      });
+    },
+  });
+
+  const resolveMutation = useMutation({
+    mutationFn: async (alertId: string) => resolveMobilePanicAlert(alertId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ['oversight', 'alerts', profile?.userId],
+      });
+    },
+  });
+
+  const alerts = previewMode ? previewAlerts : alertsQuery.data ?? [];
   const orderedAlerts = useMemo(
     () =>
       [...alerts].sort((left, right) => {
@@ -40,6 +77,46 @@ export function OversightAlertsScreen(_props: OversightAlertsScreenProps) {
     [alerts],
   );
   const activeCount = alerts.filter((alert) => alert.status === 'active').length;
+
+  const handleAcknowledge = async (alertId: string, guardName: string) => {
+    if (previewMode) {
+      await acknowledgeAlert(alertId);
+      setMessage(`Alert acknowledged for ${guardName}.`);
+      return;
+    }
+
+    try {
+      const result = await acknowledgeMutation.mutateAsync(alertId);
+
+      if (result?.success === false) {
+        throw new Error(result.error ?? 'Alert acknowledgement failed.');
+      }
+
+      setMessage(`Alert acknowledged for ${guardName}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Alert acknowledgement failed.');
+    }
+  };
+
+  const handleResolve = async (alertId: string, guardName: string) => {
+    if (previewMode) {
+      await resolveAlert(alertId);
+      setMessage(`Alert resolved for ${guardName}.`);
+      return;
+    }
+
+    try {
+      const result = await resolveMutation.mutateAsync(alertId);
+
+      if (result?.success === false) {
+        throw new Error(result.error ?? 'Alert resolution failed.');
+      }
+
+      setMessage(`Alert resolved for ${guardName}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Alert resolution failed.');
+    }
+  };
 
   return (
     <ScreenShell
@@ -98,28 +175,28 @@ export function OversightAlertsScreen(_props: OversightAlertsScreenProps) {
                   <ShieldAlert color={colors.warning} size={18} />
                 )}
                 <Text style={[styles.caption, { color: colors.foreground }]}>
-                  Guard code path is ready for supervisor acknowledgement.
+                  {previewMode
+                    ? 'Preview acknowledgement flow is active.'
+                    : 'Actions below update the live alert state on the backend.'}
                 </Text>
               </View>
             </View>
             <View style={styles.actionRow}>
               <ActionButton
-                label="Acknowledge"
+                label={
+                  acknowledgeMutation.isPending ? 'Acknowledging...' : 'Acknowledge'
+                }
                 variant="secondary"
-                disabled={alert.status !== 'active'}
-                onPress={() => {
-                  void acknowledgeAlert(alert.id);
-                  setMessage(`Alert acknowledged for ${alert.guardName}.`);
-                }}
+                disabled={
+                  acknowledgeMutation.isPending || alert.status !== 'active'
+                }
+                onPress={() => void handleAcknowledge(alert.id, alert.guardName)}
               />
               <ActionButton
-                label="Resolve"
+                label={resolveMutation.isPending ? 'Resolving...' : 'Resolve'}
                 variant="ghost"
-                disabled={alert.status === 'resolved'}
-                onPress={() => {
-                  void resolveAlert(alert.id);
-                  setMessage(`Alert resolved for ${alert.guardName}.`);
-                }}
+                disabled={resolveMutation.isPending || alert.status === 'resolved'}
+                onPress={() => void handleResolve(alert.id, alert.guardName)}
               />
             </View>
           </InfoCard>

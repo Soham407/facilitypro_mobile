@@ -5,6 +5,7 @@ import { loadNotificationState, saveNotificationState } from '../lib/notificatio
 import {
   buildNotificationRecord,
   createPreviewNotification,
+  markRemoteNotificationRead,
   persistRemoteDeviceToken,
   registerForDeviceNotifications,
   schedulePreviewNotification,
@@ -70,10 +71,29 @@ async function persistNotificationStore(get: () => NotificationStore) {
   await saveNotificationState(buildPersistedState(get()));
 }
 
+function mergeInbox(
+  existing: NotificationRecord[],
+  incoming: NotificationRecord[],
+) {
+  const previewOnly = existing.filter((entry) => entry.backendId === null);
+  const merged = new Map<string, NotificationRecord>();
+
+  for (const entry of [...incoming, ...previewOnly]) {
+    const key = entry.backendId ?? entry.id;
+    merged.set(key, entry);
+  }
+
+  return [...merged.values()].sort(
+    (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+  );
+}
+
 interface NotificationStore extends NotificationPersistedState {
   hasHydrated: boolean;
   bootstrap: (profile: AppUserProfile | null) => Promise<void>;
   registerDevice: (profile: AppUserProfile | null) => Promise<void>;
+  syncRemoteInbox: (records: NotificationRecord[]) => Promise<void>;
+  upsertRemoteRecord: (record: NotificationRecord) => Promise<void>;
   queuePreviewRoute: (route: NotificationRoute, profile: AppUserProfile | null) => Promise<void>;
   ingestDeliveredNotification: (notification: Notifications.Notification) => Promise<void>;
   markRead: (id: string) => Promise<void>;
@@ -111,6 +131,22 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     if (profile && registration.token) {
       await persistRemoteDeviceToken(profile, registration.token, registration.platform);
     }
+  },
+
+  syncRemoteInbox: async (records) => {
+    set((state) => ({
+      inbox: mergeInbox(state.inbox, records),
+    }));
+
+    await persistNotificationStore(get);
+  },
+
+  upsertRemoteRecord: async (record) => {
+    set((state) => ({
+      inbox: mergeInbox(state.inbox, [record]),
+    }));
+
+    await persistNotificationStore(get);
   },
 
   queuePreviewRoute: async (route, profile) => {
@@ -163,12 +199,14 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     const recordId =
       typeof notification.request.content.data?.recordId === 'string'
         ? notification.request.content.data.recordId
+        : typeof notification.request.content.data?.notification_id === 'string'
+          ? notification.request.content.data.notification_id
         : null;
 
     if (recordId) {
       set((state) => ({
         inbox: state.inbox.map((entry) =>
-          entry.id === recordId
+          entry.id === recordId || entry.backendId === recordId
             ? {
                 ...entry,
                 deliveryState: 'delivered',
@@ -188,6 +226,18 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
 
     const record = buildNotificationRecord({
       route,
+      backendId:
+        typeof notification.request.content.data?.notification_id === 'string'
+          ? notification.request.content.data.notification_id
+          : null,
+      backendType:
+        typeof notification.request.content.data?.backendType === 'string'
+          ? notification.request.content.data.backendType
+          : null,
+      actionUrl:
+        typeof notification.request.content.data?.actionUrl === 'string'
+          ? notification.request.content.data.actionUrl
+          : null,
       title: notification.request.content.title ?? undefined,
       body: notification.request.content.body ?? undefined,
       metadata:
@@ -205,6 +255,8 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   },
 
   markRead: async (id) => {
+    const target = get().inbox.find((entry) => entry.id === id);
+
     set((state) => ({
       lastOpenedAt: new Date().toISOString(),
       inbox: state.inbox.map((entry) =>
@@ -219,10 +271,19 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     }));
 
     await persistNotificationStore(get);
+
+    try {
+      await markRemoteNotificationRead(target?.backendId ?? null);
+    } catch {
+      // Keep the local inbox responsive even if the backend read marker fails.
+    }
   },
 
   markAllRead: async () => {
     const now = new Date().toISOString();
+    const backendIds = get()
+      .inbox.filter((entry) => entry.readAt === null && entry.backendId)
+      .map((entry) => entry.backendId as string);
 
     set((state) => ({
       lastOpenedAt: now,
@@ -234,5 +295,15 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     }));
 
     await persistNotificationStore(get);
+
+    await Promise.all(
+      backendIds.map(async (backendId) => {
+        try {
+          await markRemoteNotificationRead(backendId);
+        } catch {
+          // Best effort only.
+        }
+      }),
+    );
   },
 }));
