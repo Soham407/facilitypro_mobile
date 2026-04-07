@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
@@ -24,7 +24,7 @@ import {
 import type { GuardTabParamList } from '../../navigation/types';
 import { useAppStore } from '../../store/useAppStore';
 import { useGuardStore } from '../../store/useGuardStore';
-import type { GuardFrequentVisitorTemplate } from '../../types/guard';
+import type { GuardFrequentVisitorTemplate, GuardVisitorType } from '../../types/guard';
 
 type GuardVisitorsScreenProps = BottomTabScreenProps<GuardTabParamList, 'GuardVisitors'>;
 
@@ -62,6 +62,11 @@ const EMPTY_FORM = {
   vehicleNumber: '',
 };
 
+const VISITOR_TYPE_OPTIONS: Array<{ label: string; value: GuardVisitorType }> = [
+  { label: 'Guest', value: 'guest' },
+  { label: 'Delivery', value: 'delivery' },
+];
+
 export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
   const { colors } = useAppTheme();
   const profile = useAppStore((state) => state.profile);
@@ -69,15 +74,18 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
   const frequentVisitors = useGuardStore((state) => state.frequentVisitors);
   const previewVisitorLog = useGuardStore((state) => state.visitorLog);
   const isOfflineMode = useGuardStore((state) => state.isOfflineMode);
+  const isNetworkOnline = useGuardStore((state) => state.isNetworkOnline);
+  const hydrateVisitorLog = useGuardStore((state) => state.hydrateVisitorLog);
   const addVisitor = useGuardStore((state) => state.addVisitor);
   const checkoutVisitor = useGuardStore((state) => state.checkoutVisitor);
 
   const previewMode = isPreviewProfile(profile);
-  const usePreviewFlow = previewMode || isOfflineMode;
+  const useLocalQueueFlow = previewMode || isOfflineMode || !isNetworkOnline;
 
   const [form, setForm] = useState(EMPTY_FORM);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [selectedDestination, setSelectedDestination] = useState<ResidentDestination | null>(null);
+  const [visitorType, setVisitorType] = useState<GuardVisitorType>('guest');
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -86,16 +94,27 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
   const destinationsQuery = useQuery({
     queryKey: ['guard', 'resident-destinations', form.destination],
     queryFn: () => searchResidentDestinations(form.destination),
-    enabled: !usePreviewFlow && form.destination.trim().length >= 2,
+    enabled:
+      !previewMode &&
+      !isOfflineMode &&
+      isNetworkOnline &&
+      visitorType === 'guest' &&
+      form.destination.trim().length >= 2,
     staleTime: 30000,
   });
 
   const visitorsQuery = useQuery({
     queryKey: ['guard', 'visitors', profile?.userId],
     queryFn: () => fetchGuardVisitors(true),
-    enabled: Boolean(profile?.userId) && !usePreviewFlow,
+    enabled: Boolean(profile?.userId) && !previewMode && !isOfflineMode && isNetworkOnline,
     refetchInterval: 10000,
   });
+
+  useEffect(() => {
+    if (visitorsQuery.data) {
+      void hydrateVisitorLog(visitorsQuery.data);
+    }
+  }, [hydrateVisitorLog, visitorsQuery.data]);
 
   const checkoutMutation = useMutation({
     mutationFn: async (visitorId: string) => {
@@ -114,13 +133,14 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
 
   const insideVisitors = useMemo(
     () =>
-      usePreviewFlow
+      useLocalQueueFlow
         ? previewVisitorLog.filter((visitor) => visitor.status === 'inside')
         : (visitorsQuery.data ?? []).filter((visitor) => visitor.status === 'inside'),
-    [previewVisitorLog, usePreviewFlow, visitorsQuery.data],
+    [previewVisitorLog, useLocalQueueFlow, visitorsQuery.data],
   );
 
   const handleUseTemplate = (template: GuardFrequentVisitorTemplate) => {
+    setVisitorType('guest');
     setSelectedTemplateId(template.id);
     setSelectedDestination(null);
     setForm({
@@ -168,8 +188,13 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
       return;
     }
 
-    if (!usePreviewFlow && !selectedDestination?.flatId) {
+    if (visitorType === 'guest' && !useLocalQueueFlow && !selectedDestination?.flatId) {
       setMessage('Choose a resident flat from the live lookup before logging the visitor.');
+      return;
+    }
+
+    if (visitorType === 'guest' && !previewMode && useLocalQueueFlow && !selectedDestination?.flatId) {
+      setMessage('Pick a resident flat while online before queueing this visitor entry offline.');
       return;
     }
 
@@ -177,30 +202,37 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
     setMessage(null);
 
     try {
-      if (usePreviewFlow) {
+      if (useLocalQueueFlow) {
         const result = await addVisitor({
           destination: form.destination.trim(),
+          flatId: selectedDestination?.flatId ?? null,
           frequentVisitor: Boolean(selectedTemplateId),
           name: form.name.trim(),
           phone: form.phone.trim(),
           photoUri,
           purpose: form.purpose.trim(),
+          residentId: selectedDestination?.residentId ?? null,
+          visitorType,
           vehicleNumber: form.vehicleNumber.trim(),
         });
 
         setMessage(
           result.queued
             ? 'Visitor entry saved offline and queued for sync.'
-            : 'Visitor logged successfully.',
+            : visitorType === 'delivery'
+              ? 'Delivery vehicle logged successfully.'
+              : 'Visitor logged successfully.',
         );
       } else {
         const result = await createGuardVisitorEntry({
-          flatId: selectedDestination?.flatId ?? '',
+          destination: form.destination.trim(),
+          flatId: selectedDestination?.flatId ?? null,
           isFrequentVisitor: Boolean(selectedTemplateId),
           phone: form.phone.trim(),
           photoUri,
           purpose: form.purpose.trim(),
           vehicleNumber: form.vehicleNumber.trim(),
+          visitorType,
           visitorName: form.name.trim(),
         });
 
@@ -212,12 +244,17 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
           queryKey: ['guard', 'visitors', profile?.userId],
         });
 
-        setMessage('Visitor logged and resident approval has been triggered.');
+        setMessage(
+          visitorType === 'delivery'
+            ? 'Delivery vehicle logged and material inspection has been routed to oversight.'
+            : 'Visitor logged and resident approval has been triggered.',
+        );
       }
 
       setForm(EMPTY_FORM);
       setSelectedTemplateId(null);
       setSelectedDestination(null);
+      setVisitorType('guest');
       setPhotoUri(null);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Visitor entry could not be saved.');
@@ -231,7 +268,7 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
     setMessage(null);
 
     try {
-      if (usePreviewFlow) {
+      if (useLocalQueueFlow) {
         const result = await checkoutVisitor(id);
         setMessage(
           !result.updated
@@ -269,7 +306,7 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
         />
       }
     >
-      {usePreviewFlow ? (
+      {useLocalQueueFlow ? (
         <InfoCard>
           <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Frequent visitors</Text>
           <Text style={[styles.caption, { color: colors.mutedForeground }]}>
@@ -308,68 +345,111 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
         </InfoCard>
       ) : (
         <InfoCard>
-          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Resident lookup</Text>
-          <Text style={[styles.caption, { color: colors.mutedForeground }]}>
-            Search by building, flat, or resident name so the app can send a live approval request to the correct household.
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
+            {visitorType === 'guest' ? 'Resident lookup' : 'Delivery routing'}
           </Text>
-          {destinationsQuery.data?.length ? (
-            <View style={styles.destinationWrap}>
-              {destinationsQuery.data.slice(0, 5).map((destination) => {
-                const isSelected = destination.flatId === selectedDestination?.flatId;
+          <Text style={[styles.caption, { color: colors.mutedForeground }]}>
+            {visitorType === 'guest'
+              ? 'Search by building, flat, or resident name so the app can send a live approval request to the correct household.'
+              : 'Delivery entries skip resident approval and go straight into the oversight material inspection queue.'}
+          </Text>
+          {visitorType === 'guest' ? (
+            destinationsQuery.data?.length ? (
+              <View style={styles.destinationWrap}>
+                {destinationsQuery.data.slice(0, 5).map((destination) => {
+                  const isSelected = destination.flatId === selectedDestination?.flatId;
 
-                return (
-                  <Pressable
-                    key={destination.flatId}
-                    onPress={() => handleDestinationPick(destination)}
-                    style={[
-                      styles.destinationCard,
-                      {
-                        backgroundColor: isSelected ? colors.primary : colors.secondary,
-                        borderColor: isSelected ? colors.primary : colors.border,
-                      },
-                    ]}
-                  >
-                    <View style={styles.inlineMeta}>
-                      <MapPin
-                        color={isSelected ? colors.primaryForeground : colors.primary}
-                        size={16}
-                      />
-                      <Text
-                        style={[
-                          styles.destinationTitle,
-                          {
-                            color: isSelected ? colors.primaryForeground : colors.foreground,
-                          },
-                        ]}
-                      >
-                        {destination.flatLabel}
-                      </Text>
-                    </View>
-                    <Text
+                  return (
+                    <Pressable
+                      key={destination.flatId}
+                      onPress={() => handleDestinationPick(destination)}
                       style={[
-                        styles.caption,
+                        styles.destinationCard,
                         {
-                          color: isSelected ? colors.primaryForeground : colors.mutedForeground,
+                          backgroundColor: isSelected ? colors.primary : colors.secondary,
+                          borderColor: isSelected ? colors.primary : colors.border,
                         },
                       ]}
                     >
-                      {destination.residentName ?? 'Primary resident pending'} |{' '}
-                      {destination.residentPhone ?? 'Phone pending'}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          ) : form.destination.trim().length >= 2 ? (
-            <Text style={[styles.caption, { color: colors.mutedForeground }]}>
-              No resident lookup results yet for this search.
-            </Text>
-          ) : null}
+                      <View style={styles.inlineMeta}>
+                        <MapPin
+                          color={isSelected ? colors.primaryForeground : colors.primary}
+                          size={16}
+                        />
+                        <Text
+                          style={[
+                            styles.destinationTitle,
+                            {
+                              color: isSelected ? colors.primaryForeground : colors.foreground,
+                            },
+                          ]}
+                        >
+                          {destination.flatLabel}
+                        </Text>
+                      </View>
+                      <Text
+                        style={[
+                          styles.caption,
+                          {
+                            color: isSelected ? colors.primaryForeground : colors.mutedForeground,
+                          },
+                        ]}
+                      >
+                        {destination.residentName ?? 'Primary resident pending'} |{' '}
+                        {destination.residentPhone ?? 'Phone pending'}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : form.destination.trim().length >= 2 ? (
+              <Text style={[styles.caption, { color: colors.mutedForeground }]}>
+                No resident lookup results yet for this search.
+              </Text>
+            ) : null
+          ) : (
+            <StatusChip label="Oversight material inspection" tone="warning" />
+          )}
         </InfoCard>
       )}
 
       <InfoCard>
         <Text style={[styles.sectionTitle, { color: colors.foreground }]}>New visitor entry</Text>
+        <View style={styles.typeSelectorRow}>
+          {VISITOR_TYPE_OPTIONS.map((option) => {
+            const isSelected = option.value === visitorType;
+
+            return (
+              <Pressable
+                key={option.value}
+                accessibilityRole="button"
+                onPress={() => {
+                  setVisitorType(option.value);
+                  setSelectedDestination(null);
+                  setSelectedTemplateId(null);
+                }}
+                style={[
+                  styles.typeSelectorButton,
+                  {
+                    backgroundColor: isSelected ? colors.primary : colors.secondary,
+                    borderColor: isSelected ? colors.primary : colors.border,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.typeSelectorLabel,
+                    {
+                      color: isSelected ? colors.primaryForeground : colors.foreground,
+                    },
+                  ]}
+                >
+                  {option.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
         <FormField
           label="Visitor name"
           onChangeText={(value) => setForm((state) => ({ ...state, name: value }))}
@@ -386,16 +466,28 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
         <FormField
           label="Purpose of visit"
           onChangeText={(value) => setForm((state) => ({ ...state, purpose: value }))}
-          placeholder="Delivery, maintenance, guest visit"
+          placeholder={visitorType === 'delivery' ? 'Material delivery, courier, vendor drop' : 'Maintenance, guest visit, house help'}
           value={form.purpose}
         />
         <FormField
-          label={usePreviewFlow ? 'Destination' : 'Resident / flat search'}
+          label={
+            visitorType === 'delivery'
+              ? 'Receiving point / note'
+              : useLocalQueueFlow
+                ? 'Destination'
+                : 'Resident / flat search'
+          }
           onChangeText={(value) => {
             setSelectedDestination(null);
             setForm((state) => ({ ...state, destination: value }));
           }}
-          placeholder={usePreviewFlow ? 'Tower A - Flat 304' : 'Search building, flat, or resident'}
+          placeholder={
+            visitorType === 'delivery'
+              ? 'North Gate receiving bay'
+              : useLocalQueueFlow
+                ? 'Tower A - Flat 304'
+                : 'Search building, flat, or resident'
+          }
           value={form.destination}
         />
         <FormField
@@ -426,9 +518,13 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
         {message ? <Text style={[styles.message, { color: colors.primary }]}>{message}</Text> : null}
         <StatusChip
           label={
-            usePreviewFlow ? 'Offline-safe entry logging' : 'Live resident approval flow'
+            useLocalQueueFlow
+              ? 'Offline-safe entry logging'
+              : visitorType === 'delivery'
+                ? 'Delivery routed to oversight'
+                : 'Live resident approval flow'
           }
-          tone={usePreviewFlow ? 'warning' : 'info'}
+          tone={useLocalQueueFlow ? 'warning' : visitorType === 'delivery' ? 'warning' : 'info'}
         />
       </InfoCard>
 
@@ -471,6 +567,10 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
                   </View>
                   <View style={styles.inlineMeta}>
                     <StatusChip
+                      label={visitor.visitorType === 'delivery' ? 'delivery' : 'guest'}
+                      tone={visitor.visitorType === 'delivery' ? 'info' : 'default'}
+                    />
+                    <StatusChip
                       label={visitor.approvalStatus.replace(/_/g, ' ')}
                       tone={
                         visitor.approvalStatus === 'approved'
@@ -489,6 +589,11 @@ export function GuardVisitorsScreen(_props: GuardVisitorsScreenProps) {
                   <Text style={[styles.metaText, { color: colors.mutedForeground }]}>
                     Logged {formatVisitorTimestamp(visitor.recordedAt)}
                   </Text>
+                  {visitor.entryLocationName ? (
+                    <Text style={[styles.metaText, { color: colors.mutedForeground }]}>
+                      Gate: {visitor.entryLocationName}
+                    </Text>
+                  ) : null}
                 </View>
                 <ActionButton
                   label={busyVisitorId === visitor.id ? 'Saving...' : 'Check out'}
@@ -546,6 +651,23 @@ const styles = StyleSheet.create({
   destinationTitle: {
     fontFamily: FontFamily.sansSemiBold,
     fontSize: FontSize.base,
+  },
+  typeSelectorRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+  },
+  typeSelectorButton: {
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    minHeight: 42,
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.sm,
+  },
+  typeSelectorLabel: {
+    fontFamily: FontFamily.sansSemiBold,
+    fontSize: FontSize.sm,
   },
   photoSection: {
     gap: Spacing.base,

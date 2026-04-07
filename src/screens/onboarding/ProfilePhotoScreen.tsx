@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
-import * as ImagePicker from 'expo-image-picker';
 
 import { ActionButton } from '../../components/shared/ActionButton';
 import { InfoCard } from '../../components/shared/InfoCard';
@@ -10,12 +9,13 @@ import { FontFamily, FontSize } from '../../constants/typography';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { uploadProfilePhoto } from '../../lib/profile';
 import { useAppStore } from '../../store/useAppStore';
+import { capturePhoto } from '../../lib/media';
 
 export function ProfilePhotoScreen() {
   const { colors } = useAppTheme();
   const profile = useAppStore((state) => state.profile);
   const refreshProfile = useAppStore((state) => state.refreshProfile);
-  const [asset, setAsset] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [assetUri, setAssetUri] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [hasAttemptedAutoCapture, setHasAttemptedAutoCapture] = useState(false);
@@ -23,22 +23,17 @@ export function ProfilePhotoScreen() {
   const handleCapture = async () => {
     setErrorMessage(null);
 
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    try {
+      const asset = await capturePhoto({
+        cameraType: 'front',
+        aspect: [1, 1],
+      });
 
-    if (!permission.granted) {
-      setErrorMessage('Camera access is required for guard profile setup.');
-      return;
-    }
-
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [1, 1],
-      cameraType: ImagePicker.CameraType.front,
-      quality: 0.8,
-    });
-
-    if (!result.canceled && result.assets[0]) {
-      setAsset(result.assets[0]);
+      if (asset) {
+        setAssetUri(asset.uri);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not capture profile photo.');
     }
   };
 
@@ -50,7 +45,7 @@ export function ProfilePhotoScreen() {
   }, [hasAttemptedAutoCapture]);
 
   const handleSave = async () => {
-    if (!profile?.employeeId || !asset) {
+    if (!profile?.employeeId || !assetUri) {
       setErrorMessage('Please capture a profile photo before continuing.');
       return;
     }
@@ -59,7 +54,7 @@ export function ProfilePhotoScreen() {
     setErrorMessage(null);
 
     try {
-      await uploadProfilePhoto(profile.employeeId, asset.uri, asset.mimeType ?? undefined);
+      await uploadProfilePhoto(profile.employeeId, assetUri);
       await refreshProfile();
     } catch (error) {
       const nextMessage =
@@ -78,9 +73,9 @@ export function ProfilePhotoScreen() {
       footer={
         <View style={styles.footer}>
           <ActionButton
-            label={asset ? 'Save and continue' : 'Capture photo first'}
+            label={assetUri ? 'Save and continue' : 'Capture photo first'}
             loading={isSaving}
-            disabled={!asset}
+            disabled={!assetUri}
             onPress={handleSave}
           />
           <ActionButton label="Retake photo" variant="ghost" disabled={isSaving} onPress={() => void handleCapture()} />
@@ -88,8 +83,8 @@ export function ProfilePhotoScreen() {
       }
     >
       <InfoCard>
-        {asset ? (
-          <Image source={{ uri: asset.uri }} style={styles.preview} />
+        {assetUri ? (
+          <Image source={{ uri: assetUri }} style={styles.preview} />
         ) : (
           <View style={[styles.placeholder, { backgroundColor: colors.secondary }]}>
             <Text style={[styles.placeholderText, { color: colors.mutedForeground }]}>

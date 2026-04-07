@@ -11,6 +11,7 @@ import { ScreenShell } from '../../components/shared/ScreenShell';
 import { Spacing } from '../../constants/spacing';
 import { FontFamily, FontSize } from '../../constants/typography';
 import { useAppTheme } from '../../hooks/useAppTheme';
+import { capturePhoto } from '../../lib/media';
 import type { SupplierTabParamList } from '../../navigation/types';
 import { useSupplierStore } from '../../store/useSupplierStore';
 import type { SupplierPORecord } from '../../types/commerce';
@@ -55,6 +56,7 @@ export function SupplierOrdersScreen(_props: SupplierOrdersScreenProps) {
   const [message, setMessage] = useState<string | null>(null);
   const [vehicleDrafts, setVehicleDrafts] = useState<Record<string, string>>({});
   const [dispatchNotes, setDispatchNotes] = useState<Record<string, string>>({});
+  const [proofDrafts, setProofDrafts] = useState<Record<string, string>>({});
 
   const orderedPOs = useMemo(
     () =>
@@ -64,18 +66,43 @@ export function SupplierOrdersScreen(_props: SupplierOrdersScreenProps) {
     [pos],
   );
 
+  const handleCaptureProof = async (poId: string) => {
+    try {
+      const photo = await capturePhoto({
+        cameraType: 'back',
+        aspect: [4, 3],
+      });
+
+      if (photo) {
+        setProofDrafts((state) => ({
+          ...state,
+          [poId]: photo.uri,
+        }));
+      }
+    } catch (error) {
+      setMessage('Could not capture delivery proof.');
+    }
+  };
+
   const handleDispatch = async (poId: string, poNumber: string) => {
     const vehicleDetails = vehicleDrafts[poId]?.trim() ?? '';
     const nextDispatchNote = dispatchNotes[poId] ?? '';
+    const proofOfDeliveryUri = proofDrafts[poId];
 
     if (!vehicleDetails) {
       setMessage(`Add a vehicle number before dispatching ${poNumber}.`);
       return;
     }
 
+    if (!proofOfDeliveryUri) {
+      setMessage(`Capture a photo of the delivery challan or received note for ${poNumber}.`);
+      return;
+    }
+
     await dispatchPO(poId, {
       vehicleDetails,
       dispatchNotes: nextDispatchNote,
+      proofOfDeliveryUri,
     });
     setMessage(`${poNumber} moved into dispatched status.`);
   };
@@ -162,6 +189,16 @@ export function SupplierOrdersScreen(_props: SupplierOrdersScreenProps) {
                     textAlignVertical="top"
                     value={dispatchNotes[po.id] ?? ''}
                   />
+                  <View style={styles.proofRow}>
+                    <Text style={[styles.caption, { color: colors.foreground }]}>
+                      {proofDrafts[po.id] ? 'Proof attached' : 'Challan / Delivery note photo required'}
+                    </Text>
+                    <ActionButton
+                      label={proofDrafts[po.id] ? 'Retake photo' : 'Capture proof'}
+                      variant="secondary"
+                      onPress={() => void handleCaptureProof(po.id)}
+                    />
+                  </View>
                   <ActionButton
                     label="Dispatch PO"
                     variant="ghost"
@@ -214,5 +251,11 @@ const styles = StyleSheet.create({
   multilineField: {
     minHeight: 100,
     paddingTop: Spacing.base,
+  },
+  proofRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.base,
   },
 });

@@ -4,7 +4,6 @@ import { BuyerNavigator } from './BuyerNavigator';
 import { GuardNavigator } from './GuardNavigator';
 import { HRMSNavigator } from './HRMSNavigator';
 import { OversightNavigator } from './OversightNavigator';
-import { ResidentNavigator } from './ResidentNavigator';
 import { ServiceNavigator } from './ServiceNavigator';
 import { SupplierNavigator } from './SupplierNavigator';
 import { RoleLandingScreen } from '../screens/app/RoleLandingScreen';
@@ -24,10 +23,6 @@ export function RoleNavigator({ role }: RoleNavigatorProps) {
 
   if (role === 'employee') {
     return <HRMSNavigator />;
-  }
-
-  if (role === 'resident') {
-    return <ResidentNavigator />;
   }
 
   if (role === 'security_supervisor' || role === 'society_manager') {

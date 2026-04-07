@@ -1,5 +1,3 @@
-import * as ImagePicker from 'expo-image-picker';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import { Clock3, ShieldCheck, TriangleAlert } from 'lucide-react-native';
 import { ActivityIndicator, Alert, Image, StyleSheet, Text, View } from 'react-native';
@@ -10,9 +8,10 @@ import { ScreenShell } from '../../components/shared/ScreenShell';
 import { Spacing } from '../../constants/spacing';
 import { FontFamily, FontSize } from '../../constants/typography';
 import { useAppTheme } from '../../hooks/useAppTheme';
-import { fetchHrmsAttendanceRecords, recordHrmsAttendance } from '../../lib/hrms';
-import type { HRMSTabParamList } from '../../navigation/types';
 import { useAppStore } from '../../store/useAppStore';
+import { useHrmsStore } from '../../store/useHrmsStore';
+import type { HRMSTabParamList } from '../../navigation/types';
+import { capturePhoto } from '../../lib/media';
 
 type HrmsAttendanceScreenProps = BottomTabScreenProps<
   HRMSTabParamList,
@@ -40,57 +39,34 @@ function formatTimeLabel(value: string | null) {
 
 export function HrmsAttendanceScreen(_props: HrmsAttendanceScreenProps) {
   const { colors } = useAppTheme();
-  const queryClient = useQueryClient();
   const profile = useAppStore((state) => state.profile);
   const onboarding = useAppStore((state) => state.onboarding);
+  
+  const { attendance, isLoading, clockIn, clockOut } = useHrmsStore();
 
-  const attendanceQuery = useQuery({
-    queryKey: ['hrms', 'attendance', profile?.employeeId],
-    queryFn: () => fetchHrmsAttendanceRecords(profile),
-    enabled: Boolean(profile),
-  });
-
-  const attendanceMutation = useMutation({
-    mutationFn: async (action: 'check-in' | 'check-out') => {
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-
-      if (!permission.granted) {
-        throw new Error('Camera permission is required for selfie attendance.');
-      }
-
-      const captureResult = await ImagePicker.launchCameraAsync({
-        allowsEditing: false,
-        cameraType: ImagePicker.CameraType.front,
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.6,
+  const handleAttendance = async (action: 'check-in' | 'check-out') => {
+    try {
+      const asset = await capturePhoto({
+        cameraType: 'front',
+        aspect: [1, 1],
       });
 
-      if (captureResult.canceled || !captureResult.assets[0]) {
+      if (!asset) {
         throw new Error('Selfie capture was cancelled.');
       }
 
-      return recordHrmsAttendance({
-        action,
-        onboarding,
-        profile,
-        selfieUri: captureResult.assets[0].uri,
-        mimeType: captureResult.assets[0].mimeType ?? undefined,
-      });
-    },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['hrms', 'attendance', profile?.employeeId] }),
-        queryClient.invalidateQueries({ queryKey: ['hrms', 'dashboard', profile?.employeeId, profile?.role] }),
-      ]);
-    },
-    onError: (error) => {
-      const message =
-        error instanceof Error ? error.message : 'Attendance could not be saved.';
+      if (action === 'check-in') {
+        await clockIn(profile, onboarding, asset.uri);
+      } else {
+        await clockOut(profile, onboarding, asset.uri);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Attendance could not be saved.';
       Alert.alert('Attendance update', message);
-    },
-  });
+    }
+  };
 
-  const latestRecord = attendanceQuery.data?.[0] ?? null;
+  const latestRecord = attendance?.[0] ?? null;
 
   return (
     <ScreenShell
@@ -101,28 +77,29 @@ export function HrmsAttendanceScreen(_props: HrmsAttendanceScreenProps) {
         <View style={styles.footer}>
           <ActionButton
             label="Check in with selfie"
-            loading={attendanceMutation.isPending && attendanceMutation.variables === 'check-in'}
-            onPress={() => attendanceMutation.mutate('check-in')}
+            loading={isLoading}
+            onPress={() => handleAttendance('check-in')}
           />
           <ActionButton
             label="Check out with selfie"
             variant="secondary"
-            loading={attendanceMutation.isPending && attendanceMutation.variables === 'check-out'}
-            onPress={() => attendanceMutation.mutate('check-out')}
+            loading={isLoading}
+            onPress={() => handleAttendance('check-out')}
           />
         </View>
       }
     >
-      {attendanceQuery.isLoading ? (
+      {isLoading ? (
         <InfoCard>
           <View style={styles.loadingRow}>
             <ActivityIndicator color={colors.primary} />
             <Text style={[styles.loadingText, { color: colors.mutedForeground }]}>
-              Loading attendance history...
+              Updating attendance...
             </Text>
           </View>
         </InfoCard>
       ) : null}
+
 
       <InfoCard>
         <View style={styles.headerRow}>
@@ -164,8 +141,8 @@ export function HrmsAttendanceScreen(_props: HrmsAttendanceScreenProps) {
           <Clock3 color={colors.info} size={22} />
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Recent attendance</Text>
         </View>
-        {attendanceQuery.data?.length ? (
-          attendanceQuery.data.map((item) => (
+        {attendance.length ? (
+          attendance.map((item) => (
             <View key={item.id} style={[styles.logRow, { borderColor: colors.border }]}>
               <View style={styles.logCopy}>
                 <Text style={[styles.logDate, { color: colors.foreground }]}>

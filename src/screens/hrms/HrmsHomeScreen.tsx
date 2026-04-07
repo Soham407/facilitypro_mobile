@@ -9,9 +9,9 @@ import { ScreenShell } from '../../components/shared/ScreenShell';
 import { Spacing } from '../../constants/spacing';
 import { FontFamily, FontSize } from '../../constants/typography';
 import { useAppTheme } from '../../hooks/useAppTheme';
-import { fetchHrmsDashboardData } from '../../lib/hrms';
 import type { HRMSTabParamList } from '../../navigation/types';
 import { useAppStore } from '../../store/useAppStore';
+import { useHrmsStore } from '../../store/useHrmsStore';
 
 type HrmsHomeScreenProps = BottomTabScreenProps<HRMSTabParamList, 'HRMSHome'>;
 
@@ -36,29 +36,31 @@ function formatDateLabel(value: string | null) {
 export function HrmsHomeScreen({ navigation }: HrmsHomeScreenProps) {
   const { colors } = useAppTheme();
   const profile = useAppStore((state) => state.profile);
+  const { 
+    attendance, 
+    leaveTypes, 
+    leaveApplications, 
+    payslips, 
+    documents, 
+    isLoading: storeLoading 
+  } = useHrmsStore();
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['hrms', 'dashboard', profile?.employeeId, profile?.role],
-    queryFn: () => fetchHrmsDashboardData(profile),
-    enabled: Boolean(profile),
-  });
-
-  const todayAttendance = data?.attendance[0] ?? null;
+  const todayAttendance = attendance[0] ?? null;
   const pendingLeaves =
-    data?.leaveApplications.filter((item) => item.status === 'pending').length ?? 0;
-  const latestPayslip = data?.payslips[0] ?? null;
+    leaveApplications.filter((item) => item.status === 'pending').length ?? 0;
+  const latestPayslip = payslips[0] ?? null;
   const verifiedDocuments =
-    data?.documents.filter((item) => item.isVerified).length ?? 0;
+    documents.filter((item) => item.isVerified).length ?? 0;
   const totalLeaveBalance =
-    data?.leaveTypes.reduce((sum, item) => sum + item.remainingDays, 0) ?? 0;
+    leaveTypes.reduce((sum, item) => sum + item.remainingDays, 0) ?? 0;
 
   return (
     <ScreenShell
-      eyebrow={data?.isPreview ? 'Phase 4 preview' : 'Phase 4'}
+      eyebrow={profile?.preferences.previewMode ? 'Phase 4 preview' : 'Phase 4'}
       title="HRMS command deck"
       description="Attendance, leave, payroll, and document access are grouped here so payroll-administered staff can work from one mobile workspace."
     >
-      {isLoading ? (
+      {storeLoading ? (
         <InfoCard>
           <View style={styles.loadingRow}>
             <ActivityIndicator color={colors.primary} />
@@ -69,7 +71,7 @@ export function HrmsHomeScreen({ navigation }: HrmsHomeScreenProps) {
         </InfoCard>
       ) : null}
 
-      {data?.isPreview ? (
+      {profile?.preferences.previewMode ? (
         <InfoCard>
           <Text style={[styles.previewTitle, { color: colors.foreground }]}>Preview mode is active</Text>
           <Text style={[styles.previewCopy, { color: colors.mutedForeground }]}>
@@ -138,7 +140,7 @@ export function HrmsHomeScreen({ navigation }: HrmsHomeScreenProps) {
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Document vault</Text>
         </View>
         <Text style={[styles.metricValue, { color: colors.foreground }]}>
-          {verifiedDocuments}/{data?.documents.length ?? 0} verified
+          {verifiedDocuments}/{documents.length} verified
         </Text>
         <Text style={[styles.metricCopy, { color: colors.mutedForeground }]}>
           Aadhar, PAN, Voter ID, and role-specific compliance documents live in one place.
@@ -176,6 +178,11 @@ export function HrmsHomeScreen({ navigation }: HrmsHomeScreenProps) {
           {
             label: 'Preview payslip ready',
             route: 'payslip_ready',
+            variant: 'ghost',
+          },
+          {
+            label: 'Preview geo-fence breach',
+            route: 'inactivity_alert',
             variant: 'ghost',
           },
         ]}

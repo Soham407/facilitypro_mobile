@@ -114,7 +114,9 @@ export function NotificationInboxCard({
               <Text style={[styles.metaLine, { color: colors.mutedForeground }]}>
                 {item.deliveryModes.join(' + ')}
                 {item.fallbackState !== 'not_applicable'
-                  ? ` | SMS fallback ${item.fallbackState.replace(/_/g, ' ')}`
+                  ? item.fallbackState === 'sent'
+                    ? ' | Sent via SMS'
+                    : ` | SMS fallback ${item.fallbackState.replace(/_/g, ' ')}`
                   : ''}
               </Text>
             </View>

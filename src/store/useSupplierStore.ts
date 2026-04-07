@@ -68,6 +68,7 @@ function createDefaultPOs(): SupplierPORecord[] {
       status: 'acknowledged',
       vehicleDetails: null,
       dispatchNotes: null,
+      proofOfDeliveryUri: null,
       createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
     },
   ];
@@ -132,7 +133,7 @@ interface SupplierStore extends SupplierPersistedState {
   refreshPortal: () => Promise<void>;
   respondToIndent: (id: string, decision: 'accept' | 'reject') => Promise<void>;
   acknowledgePO: (id: string) => Promise<void>;
-  dispatchPO: (id: string, input: { vehicleDetails: string; dispatchNotes: string }) => Promise<void>;
+  dispatchPO: (id: string, input: { vehicleDetails: string; dispatchNotes: string; proofOfDeliveryUri?: string }) => Promise<void>;
   submitBill: (input: {
     poId: string;
     billNumber?: string;
@@ -219,6 +220,7 @@ export const useSupplierStore = create<SupplierStore>((set, get) => ({
                 status: 'sent_to_vendor',
                 vehicleDetails: null,
                 dispatchNotes: null,
+                proofOfDeliveryUri: null,
                 createdAt: new Date().toISOString(),
               },
               ...state.pos,
@@ -271,6 +273,7 @@ export const useSupplierStore = create<SupplierStore>((set, get) => ({
               status: 'dispatched',
               vehicleDetails: vehicleDetails || 'Shared vehicle',
               dispatchNotes: dispatchNotes || null,
+              proofOfDeliveryUri: input.proofOfDeliveryUri || null,
             }
           : po,
       ),

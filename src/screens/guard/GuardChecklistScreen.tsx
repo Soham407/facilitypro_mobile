@@ -15,6 +15,7 @@ import { FontFamily, FontSize } from '../../constants/typography';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { fetchGuardChecklistItems, isPreviewProfile, submitGuardChecklist } from '../../lib/mobileBackend';
 import { capturePhoto } from '../../lib/media';
+import { cancelChecklistReminder } from '../../lib/notifications';
 import type { GuardTabParamList } from '../../navigation/types';
 import { useAppStore } from '../../store/useAppStore';
 import { useGuardStore } from '../../store/useGuardStore';
@@ -50,6 +51,10 @@ function isChecklistReady(items: GuardChecklistItem[]) {
   );
 }
 
+function hasChecklistReopenOverride(items: GuardChecklistItem[]) {
+  return items.some((item) => item.overrideStatus === 'approved');
+}
+
 export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
   const { colors } = useAppTheme();
   const profile = useAppStore((state) => state.profile);
@@ -58,27 +63,49 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
   const previewChecklistItems = useGuardStore((state) => state.checklistItems);
   const previewChecklistSubmittedAt = useGuardStore((state) => state.checklistSubmittedAt);
   const isOfflineMode = useGuardStore((state) => state.isOfflineMode);
+  const isNetworkOnline = useGuardStore((state) => state.isNetworkOnline);
+  const hydrateChecklistItems = useGuardStore((state) => state.hydrateChecklistItems);
   const toggleChecklistItem = useGuardStore((state) => state.toggleChecklistItem);
   const attachChecklistEvidence = useGuardStore((state) => state.attachChecklistEvidence);
+  const updateChecklistNumericValue = useGuardStore((state) => state.updateChecklistNumericValue);
   const submitPreviewChecklist = useGuardStore((state) => state.submitChecklist);
-  const usePreviewFlow = previewMode || isOfflineMode;
+  const useLocalQueueFlow = previewMode || isOfflineMode || !isNetworkOnline;
 
   const remoteChecklistQuery = useQuery({
     queryKey: ['guard', 'checklist', profile?.userId],
     queryFn: fetchGuardChecklistItems,
-    enabled: Boolean(profile?.userId) && !usePreviewFlow,
+    enabled: Boolean(profile?.userId) && !previewMode && !isOfflineMode && isNetworkOnline,
     refetchInterval: 60000,
   });
+
+  const remoteChecklistSubmittedAt =
+    remoteChecklistQuery.data?.find((item) => item.completedAt)?.completedAt ?? null;
 
   const [draftItems, setDraftItems] = useState<GuardChecklistItem[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [busyItemId, setBusyItemId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!usePreviewFlow && remoteChecklistQuery.data) {
+    void cancelChecklistReminder().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!useLocalQueueFlow && remoteChecklistQuery.data) {
       setDraftItems(remoteChecklistQuery.data);
     }
-  }, [remoteChecklistQuery.data, usePreviewFlow]);
+  }, [remoteChecklistQuery.data, useLocalQueueFlow]);
+
+  useEffect(() => {
+    if (remoteChecklistQuery.data) {
+      void hydrateChecklistItems(remoteChecklistQuery.data, remoteChecklistSubmittedAt);
+    }
+  }, [hydrateChecklistItems, remoteChecklistQuery.data, remoteChecklistSubmittedAt]);
+
+  useEffect(() => {
+    if (!useLocalQueueFlow && draftItems.length) {
+      void hydrateChecklistItems(draftItems, remoteChecklistSubmittedAt);
+    }
+  }, [draftItems, hydrateChecklistItems, remoteChecklistSubmittedAt, useLocalQueueFlow]);
 
   const submitMutation = useMutation({
     mutationFn: async (items: GuardChecklistItem[]) => submitGuardChecklist(items),
@@ -89,10 +116,16 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
     },
   });
 
-  const checklistItems = usePreviewFlow ? previewChecklistItems : draftItems;
-  const checklistSubmittedAt = usePreviewFlow
+  const checklistItems = useLocalQueueFlow ? previewChecklistItems : draftItems;
+  const checklistSubmittedAt = useLocalQueueFlow
     ? previewChecklistSubmittedAt
-    : remoteChecklistQuery.data?.find((item) => item.completedAt)?.completedAt ?? null;
+    : remoteChecklistSubmittedAt;
+  const hasOverrideApproval = hasChecklistReopenOverride(checklistItems);
+  const checklistLocked = Boolean(checklistSubmittedAt) && !hasOverrideApproval;
+  const overrideItem =
+    checklistItems.find((item) => item.overrideStatus === 'approved') ??
+    checklistItems.find((item) => item.overrideStatus === 'resubmitted') ??
+    null;
 
   const completedCount = useMemo(
     () =>
@@ -115,7 +148,7 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
   const handleToggle = async (itemId: string) => {
     const item = checklistItems.find((entry) => entry.id === itemId);
 
-    if (!item || checklistSubmittedAt) {
+    if (!item || checklistLocked) {
       return;
     }
 
@@ -130,7 +163,7 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
 
     setMessage(null);
 
-    if (usePreviewFlow) {
+    if (useLocalQueueFlow) {
       await toggleChecklistItem(itemId);
       return;
     }
@@ -162,7 +195,7 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
         return;
       }
 
-      if (usePreviewFlow) {
+      if (useLocalQueueFlow) {
         await attachChecklistEvidence(itemId, photo.uri);
       } else {
         updateRemoteDraftItem(itemId, (current) => ({
@@ -184,6 +217,11 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
   };
 
   const handleNumericValueChange = (itemId: string, value: string) => {
+    if (useLocalQueueFlow) {
+      void updateChecklistNumericValue(itemId, value);
+      return;
+    }
+
     updateRemoteDraftItem(itemId, (current) => ({
       ...current,
       completedAt: value.trim() ? new Date().toISOString() : null,
@@ -196,7 +234,7 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
   const handleSubmit = async () => {
     setMessage(null);
 
-    if (usePreviewFlow) {
+    if (useLocalQueueFlow) {
       const result = await submitPreviewChecklist();
 
       if (!result.submitted) {
@@ -207,7 +245,9 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
       setMessage(
         result.queued
           ? 'Checklist locked locally and queued for sync.'
-          : 'Checklist submitted and locked for this shift.',
+          : hasOverrideApproval
+            ? 'Checklist resubmitted and locked for this shift.'
+            : 'Checklist submitted and locked for this shift.',
       );
       return;
     }
@@ -224,7 +264,11 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
         throw new Error(result.error ?? 'Checklist submission failed.');
       }
 
-      setMessage('Checklist submitted through the backend workflow and locked for this shift.');
+      setMessage(
+        hasOverrideApproval
+          ? 'Checklist resubmitted through the backend workflow.'
+          : 'Checklist submitted through the backend workflow and locked for this shift.',
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Checklist submission failed.');
     }
@@ -238,14 +282,18 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
       footer={
         <ActionButton
           label={
-            checklistSubmittedAt
+            checklistLocked
               ? 'Checklist locked'
               : submitMutation.isPending
-                ? 'Submitting checklist...'
-                : 'Submit and lock checklist'
+                ? hasOverrideApproval
+                  ? 'Resubmitting checklist...'
+                  : 'Submitting checklist...'
+                : hasOverrideApproval
+                  ? 'Resubmit checklist'
+                  : 'Submit and lock checklist'
           }
           loading={submitMutation.isPending}
-          disabled={Boolean(checklistSubmittedAt)}
+          disabled={checklistLocked}
           onPress={() => void handleSubmit()}
         />
       }
@@ -259,12 +307,48 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
             </Text>
           </View>
           <StatusChip
-            label={checklistSubmittedAt ? 'Locked' : usePreviewFlow ? 'Offline-safe' : 'Backend linked'}
-            tone={checklistSubmittedAt ? 'success' : usePreviewFlow ? 'warning' : 'info'}
+            label={
+              hasOverrideApproval
+                ? 'Reopened by supervisor'
+                : checklistLocked
+                  ? 'Locked'
+                  : useLocalQueueFlow
+                    ? 'Offline-safe'
+                    : 'Backend linked'
+            }
+            tone={
+              hasOverrideApproval
+                ? 'warning'
+                : checklistLocked
+                  ? 'success'
+                  : useLocalQueueFlow
+                    ? 'warning'
+                    : 'info'
+            }
           />
         </View>
         <ProgressBar value={progress} />
         {message ? <Text style={[styles.message, { color: colors.primary }]}>{message}</Text> : null}
+        {overrideItem ? (
+          <View style={[styles.overrideBanner, { backgroundColor: colors.secondary }]}>
+            <Text style={[styles.overrideTitle, { color: colors.foreground }]}>
+              {overrideItem.overrideStatus === 'approved'
+                ? 'Supervisor override granted'
+                : 'Checklist override has been resubmitted'}
+            </Text>
+            {overrideItem.overrideReason ? (
+              <Text style={[styles.caption, { color: colors.foreground }]}>
+                Reason: {overrideItem.overrideReason}
+              </Text>
+            ) : null}
+            <Text style={[styles.caption, { color: colors.mutedForeground }]}>
+              {overrideItem.overriddenByName ?? 'Supervisor'}
+              {overrideItem.overriddenAt
+                ? ` • ${new Date(overrideItem.overriddenAt).toLocaleString()}`
+                : ''}
+            </Text>
+          </View>
+        ) : null}
         {checklistSubmittedAt ? (
           <Text style={[styles.caption, { color: colors.success }]}>
             Submitted at {new Date(checklistSubmittedAt).toLocaleString()}
@@ -275,7 +359,7 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
       {checklistItems.map((item) => (
         <InfoCard key={item.id}>
           <Pressable
-            disabled={Boolean(checklistSubmittedAt) || item.inputType === 'numeric'}
+            disabled={checklistLocked || item.inputType === 'numeric'}
             onPress={() => void handleToggle(item.id)}
             style={styles.itemHeader}
           >
@@ -351,7 +435,7 @@ export function GuardChecklistScreen(_props: GuardChecklistScreenProps) {
                   : 'Capture evidence'
             }
             variant="secondary"
-            disabled={Boolean(checklistSubmittedAt) || busyItemId === item.id}
+            disabled={checklistLocked || busyItemId === item.id}
             onPress={() => void handleCaptureEvidence(item.id)}
           />
 
@@ -392,6 +476,15 @@ const styles = StyleSheet.create({
     fontFamily: FontFamily.sansMedium,
     fontSize: FontSize.sm,
     lineHeight: 20,
+  },
+  overrideBanner: {
+    borderRadius: BorderRadius.xl,
+    gap: Spacing.xs,
+    padding: Spacing.base,
+  },
+  overrideTitle: {
+    fontFamily: FontFamily.sansSemiBold,
+    fontSize: FontSize.base,
   },
   itemHeader: {
     flexDirection: 'row',

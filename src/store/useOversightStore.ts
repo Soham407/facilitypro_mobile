@@ -5,6 +5,7 @@ import type { AppUserProfile } from '../types/app';
 import type {
   OversightAlertRecord,
   OversightAttendanceRecord,
+  OversightMaterialIssueType,
   OversightPersistedState,
   OversightRole,
   OversightTicketRecord,
@@ -196,37 +197,47 @@ function createDefaultTickets(locationName: string): OversightTicketRecord[] {
   return [
     {
       id: 'ticket-1',
+      ticketNumber: 'OVS-01001',
       ticketType: 'behavior',
+      materialIssueType: null,
       subjectName: 'Ritu Nair',
       category: 'Uniform non-compliance',
       severity: 'medium',
       status: 'open',
       createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
       note: 'Guard was missing the high-visibility vest during the 08:00 gate check.',
-      evidenceUri: null,
+      evidenceUris: [],
       batchNumber: null,
       orderedQuantity: null,
       receivedQuantity: null,
       shortageQuantity: null,
       returnQuantity: null,
       locationName: `${locationName} - Service Gate`,
+      sourceVisitorId: null,
+      parentTicketId: null,
+      inspectionOutcome: null,
     },
     {
       id: 'ticket-2',
-      ticketType: 'material_quality',
+      ticketNumber: 'OVS-01002',
+      ticketType: 'material',
+      materialIssueType: 'quality',
       subjectName: 'Lobby sanitiser refill',
       category: 'Damaged seal',
       severity: 'high',
       status: 'acknowledged',
       createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
       note: 'Incoming refill can arrived with a broken top seal and visible leakage.',
-      evidenceUri: null,
+      evidenceUris: [],
       batchNumber: 'BATCH-AC-119',
       orderedQuantity: null,
       receivedQuantity: null,
       shortageQuantity: null,
       returnQuantity: null,
       locationName: `${locationName} - Lobby Store`,
+      sourceVisitorId: null,
+      parentTicketId: null,
+      inspectionOutcome: null,
     },
   ];
 }
@@ -281,16 +292,20 @@ interface OversightStore extends OversightPersistedState {
   ) => Promise<void>;
   createTicket: (input: {
     ticketType: OversightTicketType;
+    materialIssueType?: OversightMaterialIssueType | null;
     subjectName: string;
     category: string;
     severity: OversightSeverity;
     note: string;
-    evidenceUri: string | null;
+    evidenceUris: string[];
     batchNumber?: string;
     orderedQuantity?: number | null;
     receivedQuantity?: number | null;
     returnQuantity?: number | null;
     locationName?: string | null;
+    sourceVisitorId?: string | null;
+    parentTicketId?: string | null;
+    inspectionOutcome?: 'approved' | 'rejected' | null;
   }) => Promise<void>;
 }
 
@@ -426,20 +441,25 @@ export const useOversightStore = create<OversightStore>((set, get) => ({
       tickets: [
         {
           id: createId('ticket'),
+          ticketNumber: null,
           ticketType: input.ticketType,
+          materialIssueType: input.materialIssueType ?? null,
           subjectName: input.subjectName,
           category: input.category,
           severity: input.severity,
           status: 'open',
           createdAt: new Date().toISOString(),
           note: input.note,
-          evidenceUri: input.evidenceUri,
+          evidenceUris: input.evidenceUris,
           batchNumber: input.batchNumber ?? null,
           orderedQuantity,
           receivedQuantity,
           shortageQuantity,
           returnQuantity: normalizeQuantity(input.returnQuantity),
           locationName: input.locationName ?? null,
+          sourceVisitorId: input.sourceVisitorId ?? null,
+          parentTicketId: input.parentTicketId ?? null,
+          inspectionOutcome: input.inspectionOutcome ?? null,
         },
         ...state.tickets,
       ],

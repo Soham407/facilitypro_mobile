@@ -43,7 +43,7 @@ const ROUTE_DEFINITIONS: Record<NotificationRoute, NotificationRouteDefinition> 
     body: 'Resident alert prepared for a new gate entry.',
     priority: 'high',
     dndBypass: false,
-    deliveryModes: ['sms'],
+    deliveryModes: ['push', 'sms'],
   },
   inactivity_alert: {
     title: 'Inactivity Alert',
@@ -99,7 +99,7 @@ const ROUTE_DEFINITIONS: Record<NotificationRoute, NotificationRouteDefinition> 
     body: 'A resident-facing pest control advisory has been prepared.',
     priority: 'high',
     dndBypass: false,
-    deliveryModes: ['sms'],
+    deliveryModes: ['push', 'sms'],
   },
   low_stock_alert: {
     title: 'Low Stock Alert',
@@ -546,4 +546,29 @@ export async function schedulePreviewNotification(record: NotificationRecord) {
     },
     trigger: null,
   });
+}
+
+const CHECKLIST_REMINDER_ID = 'guard-checklist-9am';
+
+export async function scheduleChecklistReminder(): Promise<void> {
+  await Notifications.cancelScheduledNotificationAsync(CHECKLIST_REMINDER_ID).catch(() => {});
+
+  await Notifications.scheduleNotificationAsync({
+    identifier: CHECKLIST_REMINDER_ID,
+    content: {
+      title: 'Checklist Reminder',
+      body: 'Your daily guard checklist has not been started yet.',
+      sound: true,
+      ...(Platform.OS === 'android' ? { channelId: 'medium' } : null),
+    },
+    trigger: {
+      type: Notifications.SchedulableTriggerInputTypes.DAILY,
+      hour: 9,
+      minute: 0,
+    },
+  });
+}
+
+export async function cancelChecklistReminder(): Promise<void> {
+  await Notifications.cancelScheduledNotificationAsync(CHECKLIST_REMINDER_ID).catch(() => {});
 }

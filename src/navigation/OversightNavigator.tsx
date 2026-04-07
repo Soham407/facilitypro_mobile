@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Bell, ClipboardList, House, ShieldAlert } from 'lucide-react-native';
+import { Bell, ClipboardList, House, ShieldAlert, UserRound } from 'lucide-react-native';
 
 import { LoadingScreen } from '../components/shared/LoadingScreen';
 import { Spacing } from '../constants/spacing';
@@ -10,8 +10,10 @@ import { OversightAlertsScreen } from '../screens/oversight/OversightAlertsScree
 import { OversightHomeScreen } from '../screens/oversight/OversightHomeScreen';
 import { OversightOperationsScreen } from '../screens/oversight/OversightOperationsScreen';
 import { OversightTicketsScreen } from '../screens/oversight/OversightTicketsScreen';
+import { HrmsSubNavigator } from './HrmsSubNavigator';
 import { useAppStore } from '../store/useAppStore';
 import { useOversightStore } from '../store/useOversightStore';
+import { useHrmsStore } from '../store/useHrmsStore';
 import type { OversightTabParamList } from './types';
 
 const Tab = createBottomTabNavigator<OversightTabParamList>();
@@ -19,12 +21,14 @@ const Tab = createBottomTabNavigator<OversightTabParamList>();
 export function OversightNavigator() {
   const { colors } = useAppTheme();
   const profile = useAppStore((state) => state.profile);
-  const bootstrap = useOversightStore((state) => state.bootstrap);
+  const bootstrapOversight = useOversightStore((state) => state.bootstrap);
+  const bootstrapHrms = useHrmsStore((state) => state.bootstrap);
   const hasHydrated = useOversightStore((state) => state.hasHydrated);
 
   useEffect(() => {
-    void bootstrap(profile);
-  }, [bootstrap, profile]);
+    void bootstrapOversight(profile);
+    void bootstrapHrms(profile);
+  }, [bootstrapOversight, bootstrapHrms, profile]);
 
   if (!hasHydrated) {
     return <LoadingScreen />;
@@ -61,6 +65,10 @@ export function OversightNavigator() {
             return <ShieldAlert color={color} size={size} />;
           }
 
+          if (route.name === 'OversightStaff') {
+            return <UserRound color={color} size={size} />;
+          }
+
           return <House color={color} size={size} />;
         },
       })}
@@ -84,6 +92,11 @@ export function OversightNavigator() {
         component={OversightTicketsScreen}
         name="OversightTickets"
         options={{ title: 'Tickets' }}
+      />
+      <Tab.Screen
+        component={HrmsSubNavigator}
+        name="OversightStaff"
+        options={{ title: 'Staff' }}
       />
     </Tab.Navigator>
   );

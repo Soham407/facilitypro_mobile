@@ -362,6 +362,16 @@ export function ServiceHomeScreen({ navigation }: ServiceHomeScreenProps) {
               navigation.navigate(role === 'delivery_boy' ? 'ServiceProof' : 'ServiceMaterials')
             }
           />
+          <ActionButton
+            label="My payslips"
+            variant="ghost"
+            onPress={() => navigation.navigate('ServiceStaff', { screen: 'HrmsPayslips' })}
+          />
+          <ActionButton
+            label="My documents"
+            variant="ghost"
+            onPress={() => navigation.navigate('ServiceStaff', { screen: 'HrmsDocuments' })}
+          />
           <ActionButton label="Sign out" variant="ghost" onPress={() => void signOut()} />
         </View>
       </InfoCard>

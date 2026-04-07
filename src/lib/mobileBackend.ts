@@ -1,16 +1,30 @@
 import { supabase } from './supabase';
 import type { AppUserProfile } from '../types/app';
 import type {
+  GuardEmergencyContact,
   GuardChecklistItem,
   GuardLocationSnapshot,
   GuardSosType,
+  GuardVisitorType,
   GuardVisitorEntry,
 } from '../types/guard';
-import type { OversightAlertRecord, OversightGuardRecord, OversightVisitorGateStat } from '../types/oversight';
-import type { ResidentPendingVisitor } from '../types/resident';
+import type {
+  OversightAlertRecord,
+  OversightAttendanceRecord,
+  OversightGuardRecord,
+  OversightMaterialDeliveryRecord,
+  OversightMaterialIssueType,
+  OversightSeverity,
+  OversightTicketRecord,
+  OversightTicketStatus,
+  OversightTicketType,
+  OversightVisitorGateStat,
+} from '../types/oversight';
+
 
 const VISITOR_MEDIA_BUCKET = 'visitor-photos';
 const GUARD_SECURE_MEDIA_BUCKET = 'guard-secure-media';
+const OVERSIGHT_TICKET_EVIDENCE_BUCKET = 'oversight-ticket-evidence';
 
 function createUploadName(prefix: string, uri: string, contentType: string) {
   const safePrefix = prefix.replace(/^\/+|\/+$/g, '');
@@ -171,6 +185,70 @@ function normalizeChecklistInputType(value: string | null | undefined) {
   return value === 'numeric' ? 'numeric' : 'yes_no';
 }
 
+function normalizeChecklistOverrideStatus(value: string | null | undefined) {
+  if (value === 'approved' || value === 'resubmitted') {
+    return value;
+  }
+
+  return 'none';
+}
+
+function normalizeVisitorType(value: string | null | undefined): GuardVisitorType {
+  return value === 'delivery' ? 'delivery' : 'guest';
+}
+
+function normalizeOversightSeverity(value: string | null | undefined): OversightSeverity {
+  if (value === 'low' || value === 'medium' || value === 'high' || value === 'critical') {
+    return value;
+  }
+
+  return 'medium';
+}
+
+function normalizeOversightTicketStatus(value: string | null | undefined): OversightTicketStatus {
+  if (value === 'open' || value === 'acknowledged' || value === 'closed') {
+    return value;
+  }
+
+  return 'open';
+}
+
+function normalizeOversightTicketType(value: string | null | undefined): OversightTicketType {
+  if (value === 'return') {
+    return 'return';
+  }
+
+  if (value === 'material') {
+    return 'material';
+  }
+
+  return 'behavior';
+}
+
+function normalizeMaterialIssueType(
+  value: string | null | undefined,
+): OversightMaterialIssueType | null {
+  if (value === 'quality' || value === 'quantity') {
+    return value;
+  }
+
+  return null;
+}
+
+function normalizeNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function normalizeEvidenceValues(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter((entry) => entry.length > 0);
+}
+
 export function isPreviewProfile(profile: AppUserProfile | null) {
   return profile?.userId.startsWith('dev-preview-') ?? false;
 }
@@ -203,29 +281,43 @@ export async function createGuardVisitorEntry(input: {
   visitorName: string;
   phone: string;
   purpose: string;
-  flatId: string;
+  destination: string;
+  flatId: string | null;
   vehicleNumber: string;
   photoUri: string | null;
   isFrequentVisitor: boolean;
+  visitorType?: GuardVisitorType;
 }) {
+  const visitorType = input.visitorType ?? 'guest';
   const photoPath = await uploadPrivateImage({
     bucket: VISITOR_MEDIA_BUCKET,
-    prefix: `gate-entry/${input.flatId}`,
+    prefix: `gate-entry/${input.flatId ?? visitorType}`,
     uri: input.photoUri,
   });
+
+  const purpose =
+    visitorType === 'delivery' && input.destination.trim()
+      ? `${input.purpose.trim()} | Drop point: ${input.destination.trim()}`
+      : input.purpose.trim();
 
   const { data, error } = await supabase.rpc('create_mobile_visitor', {
     p_flat_id: input.flatId,
     p_is_frequent_visitor: input.isFrequentVisitor,
     p_phone: input.phone,
     p_photo_url: photoPath,
-    p_purpose: input.purpose,
+    p_purpose: purpose,
     p_vehicle_number: input.vehicleNumber || null,
     p_visitor_name: input.visitorName,
+    p_visitor_type: visitorType,
   });
 
   throwIfError(error);
-  return data as { success?: boolean; visitor_id?: string; error?: string } | null;
+  return data as {
+    success?: boolean;
+    visitor_id?: string;
+    visitor?: Record<string, unknown>;
+    error?: string;
+  } | null;
 }
 
 export async function fetchGuardVisitors(includeCheckedOut = true) {
@@ -241,12 +333,20 @@ export async function fetchGuardVisitors(includeCheckedOut = true) {
     rows.map(async (row): Promise<GuardVisitorEntry> => ({
       id: String(row.id),
       backendId: String(row.id),
+      visitorType: normalizeVisitorType(row.visitor_type ? String(row.visitor_type) : null),
       name: row.visitor_name ? String(row.visitor_name) : 'Visitor',
       phone: row.phone ? String(row.phone) : '',
       purpose: row.purpose ? String(row.purpose) : 'General visit',
-      destination: row.flat_label ? String(row.flat_label) : row.resident_name ? String(row.resident_name) : 'Destination pending',
+      destination: row.flat_label
+        ? String(row.flat_label)
+        : row.entry_location_name
+          ? String(row.entry_location_name)
+          : row.resident_name
+            ? String(row.resident_name)
+            : 'Destination pending',
       flatId: row.flat_id ? String(row.flat_id) : null,
       residentId: row.resident_id ? String(row.resident_id) : null,
+      entryLocationName: row.entry_location_name ? String(row.entry_location_name) : null,
       vehicleNumber: row.vehicle_number ? String(row.vehicle_number) : '',
       photoUri: null,
       photoUrl: await createSignedMediaUrl(row.photo_url ? String(row.photo_url) : null),
@@ -307,65 +407,6 @@ export async function startGuardPanicAlert(input: {
   return data as { success?: boolean; alert_id?: string; error?: string } | null;
 }
 
-export async function fetchResidentPendingVisitors() {
-  const { data, error } = await supabase.rpc('get_resident_pending_visitors');
-
-  throwIfError(error);
-
-  const rows = (data ?? []) as Array<Record<string, string | boolean | null>>;
-
-  return Promise.all(
-    rows.map(async (row): Promise<ResidentPendingVisitor> => ({
-      id: String(row.id),
-      visitorName: row.visitor_name ? String(row.visitor_name) : 'Visitor',
-      phone: row.phone ? String(row.phone) : '',
-      purpose: row.purpose ? String(row.purpose) : 'General visit',
-      flatId: row.flat_id ? String(row.flat_id) : null,
-      flatLabel: row.flat_label ? String(row.flat_label) : 'My flat',
-      vehicleNumber: row.vehicle_number ? String(row.vehicle_number) : '',
-      photoUrl: await createSignedMediaUrl(row.photo_url ? String(row.photo_url) : null),
-      entryTime: row.entry_time ? String(row.entry_time) : new Date().toISOString(),
-      approvalStatus: normalizeApprovalStatus({
-        approvalDeadlineAt: row.approval_deadline_at ? String(row.approval_deadline_at) : null,
-        approvalStatus: row.approval_status ? String(row.approval_status) : null,
-      }) as ResidentPendingVisitor['approvalStatus'],
-      approvalDeadlineAt: row.approval_deadline_at ? String(row.approval_deadline_at) : null,
-      isFrequentVisitor: Boolean(row.is_frequent_visitor),
-      rejectionReason: row.rejection_reason ? String(row.rejection_reason) : null,
-    })),
-  );
-}
-
-export async function approveResidentVisitor(visitorId: string, userId: string) {
-  const { data, error } = await supabase.rpc('approve_visitor', {
-    p_user_id: userId,
-    p_visitor_id: visitorId,
-  });
-
-  throwIfError(error);
-  return data as { success?: boolean; error?: string } | null;
-}
-
-export async function denyResidentVisitor(visitorId: string, userId: string, reason: string) {
-  const { data, error } = await supabase.rpc('deny_visitor', {
-    p_reason: reason,
-    p_user_id: userId,
-    p_visitor_id: visitorId,
-  });
-
-  throwIfError(error);
-  return data as { success?: boolean; error?: string } | null;
-}
-
-export async function setResidentFrequentVisitor(visitorId: string, isFrequent: boolean) {
-  const { data, error } = await supabase.rpc('set_resident_frequent_visitor', {
-    p_is_frequent: isFrequent,
-    p_visitor_id: visitorId,
-  });
-
-  throwIfError(error);
-  return data as { success?: boolean; error?: string } | null;
-}
 
 export async function fetchOversightLiveGuards() {
   const { data, error } = await supabase.rpc('get_oversight_live_guards');
@@ -469,8 +510,29 @@ export async function fetchGuardChecklistItems() {
       status: row.status === 'completed' ? 'completed' : 'pending',
       completedAt: row.submitted_at ? String(row.submitted_at) : null,
       evidenceUri: await createSignedMediaUrl(row.evidence_url ? String(row.evidence_url) : null),
+      overrideStatus: normalizeChecklistOverrideStatus(
+        row.override_status ? String(row.override_status) : null,
+      ),
+      overrideReason: row.override_reason ? String(row.override_reason) : null,
+      overriddenAt: row.overridden_at ? String(row.overridden_at) : null,
+      overriddenByName: row.overridden_by_name ? String(row.overridden_by_name) : null,
     })),
   );
+}
+
+export async function reopenGuardChecklist(
+  guardId: string,
+  reason: string,
+  checklistId?: string | null,
+) {
+  const { data, error } = await supabase.rpc('reopen_guard_checklist', {
+    p_checklist_id: checklistId ?? null,
+    p_guard_id: guardId,
+    p_reason: reason,
+  });
+
+  throwIfError(error);
+  return data as { success?: boolean; error?: string } | null;
 }
 
 export async function submitGuardChecklist(items: GuardChecklistItem[]) {
@@ -511,3 +573,312 @@ export async function submitGuardChecklist(items: GuardChecklistItem[]) {
   throwIfError(error);
   return data as { success?: boolean; error?: string } | null;
 }
+
+export async function attachPanicAlertEvidence(alertId: string, photoUri: string) {
+  const photoPath = await uploadPrivateImage({
+    bucket: GUARD_SECURE_MEDIA_BUCKET,
+    prefix: `panic-alerts/${new Date().toISOString().slice(0, 10)}`,
+    uri: photoUri,
+  });
+
+  const { data, error } = await supabase
+    .from('sos_events')
+    .update({ photo_url: photoPath })
+    .eq('id', alertId)
+    .select('id')
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+
+export async function streamPanicAlertLocation(
+  alertId: string,
+  location: GuardLocationSnapshot,
+): Promise<void> {
+  try {
+    await supabase.rpc('update_panic_alert_location', {
+      p_alert_id: alertId,
+      p_latitude: location.latitude,
+      p_longitude: location.longitude,
+      p_captured_at: location.capturedAt,
+    });
+  } catch {
+    // Keep streaming best-effort and avoid interrupting the guard workflow.
+  }
+}
+
+export async function fetchPanicAlertStatus(
+  alertId: string,
+): Promise<'active' | 'acknowledged' | 'resolved' | null> {
+  try {
+    const { data, error } = await supabase.rpc('get_panic_alert_status', {
+      p_alert_id: alertId,
+    });
+
+    if (error || !data) {
+      return null;
+    }
+
+    if (data === 'active' || data === 'acknowledged' || data === 'resolved') {
+      return data;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchGuardEmergencyContacts(): Promise<GuardEmergencyContact[]> {
+  try {
+    const { data, error } = await supabase.rpc('get_guard_emergency_contacts');
+
+    if (error) {
+      return [];
+    }
+
+    return ((data ?? []) as Array<Record<string, string | boolean | null>>).map((row) => ({
+      id: String(row.id ?? row.contact_id ?? `${row.label ?? 'contact'}-${row.phone ?? ''}`),
+      label: row.label ? String(row.label) : 'Contact',
+      role: row.role ? String(row.role) : '',
+      phone: row.phone ? String(row.phone) : '',
+      description: row.description ? String(row.description) : '',
+      primary: Boolean(row.is_primary ?? row.primary),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchOversightAttendanceLog() {
+  const { data, error } = await supabase.rpc('get_oversight_attendance_log');
+
+  throwIfError(error);
+
+  return ((data ?? []) as Array<Record<string, string | null>>).map((row) => ({
+    id: String(row.id),
+    employeeName: row.employee_name ? String(row.employee_name) : 'Employee',
+    roleLabel: row.role_label ? String(row.role_label) : 'Staff',
+    locationName: row.location_name ? String(row.location_name) : 'Assigned site',
+    checkInAt: row.check_in_at ? String(row.check_in_at) : null,
+    checkOutAt: row.check_out_at ? String(row.check_out_at) : null,
+    geoStatus:
+      row.geo_status === 'verified' || row.geo_status === 'outside_fence'
+        ? row.geo_status
+        : 'missing',
+    status:
+      row.status === 'on_shift' ||
+      row.status === 'late' ||
+      row.status === 'completed' ||
+      row.status === 'absent'
+        ? row.status
+        : 'absent',
+  })) satisfies OversightAttendanceRecord[];
+}
+
+async function uploadOversightEvidenceUris(uris: string[]) {
+  return Promise.all(
+    uris.map(async (uri) => {
+      if (
+        isHttpUrl(uri) ||
+        uri.startsWith('storage://') ||
+        /^[a-z0-9-]+\/.+/i.test(uri)
+      ) {
+        return uri;
+      }
+
+      return uploadPrivateImage({
+        bucket: OVERSIGHT_TICKET_EVIDENCE_BUCKET,
+        prefix: `oversight/${new Date().toISOString().slice(0, 10)}`,
+        uri,
+      });
+    }),
+  );
+}
+
+export async function fetchOversightTickets() {
+  const { data, error } = await supabase.rpc('get_mobile_oversight_tickets');
+
+  throwIfError(error);
+
+  const rows = (data ?? []) as Array<Record<string, unknown>>;
+
+  return Promise.all(
+    rows.map(async (row): Promise<OversightTicketRecord> => {
+      const evidenceUris = await Promise.all(
+        normalizeEvidenceValues(row.evidence_urls).map(async (uri) => {
+          const signedUrl = await createSignedMediaUrl(uri);
+          return signedUrl ?? uri;
+        }),
+      );
+
+      return {
+        id: String(row.id),
+        ticketNumber: row.ticket_number ? String(row.ticket_number) : null,
+        ticketType: normalizeOversightTicketType(
+          row.ticket_type ? String(row.ticket_type) : null,
+        ),
+        materialIssueType: normalizeMaterialIssueType(
+          row.material_issue_type ? String(row.material_issue_type) : null,
+        ),
+        subjectName: row.subject_name ? String(row.subject_name) : 'Ticket',
+        category: row.category ? String(row.category) : 'General',
+        severity: normalizeOversightSeverity(row.severity ? String(row.severity) : null),
+        status: normalizeOversightTicketStatus(row.status ? String(row.status) : null),
+        createdAt: row.created_at ? String(row.created_at) : new Date().toISOString(),
+        note: row.note ? String(row.note) : '',
+        evidenceUris,
+        batchNumber: row.batch_number ? String(row.batch_number) : null,
+        orderedQuantity: normalizeNumber(row.ordered_quantity),
+        receivedQuantity: normalizeNumber(row.received_quantity),
+        shortageQuantity: normalizeNumber(row.shortage_quantity),
+        returnQuantity: normalizeNumber(row.return_quantity),
+        locationName: row.location_name ? String(row.location_name) : null,
+        sourceVisitorId: row.source_visitor_id ? String(row.source_visitor_id) : null,
+        parentTicketId: row.parent_ticket_id ? String(row.parent_ticket_id) : null,
+        inspectionOutcome:
+          row.inspection_outcome === 'approved' || row.inspection_outcome === 'rejected'
+            ? row.inspection_outcome
+            : null,
+      };
+    }),
+  );
+}
+
+export async function fetchPendingMaterialDeliveryEvents() {
+  const { data, error } = await supabase.rpc('get_pending_material_delivery_events');
+
+  throwIfError(error);
+
+  const rows = (data ?? []) as Array<Record<string, unknown>>;
+
+  return Promise.all(
+    rows.map(async (row): Promise<OversightMaterialDeliveryRecord> => ({
+      id: String(row.id),
+      visitorName: row.visitor_name ? String(row.visitor_name) : 'Delivery',
+      purpose: row.purpose ? String(row.purpose) : 'Delivery inspection pending',
+      vehicleNumber: row.vehicle_number ? String(row.vehicle_number) : '',
+      photoUrl: await createSignedMediaUrl(row.photo_url ? String(row.photo_url) : null),
+      gateName: row.gate_name ? String(row.gate_name) : 'Gate',
+      entryTime: row.entry_time ? String(row.entry_time) : new Date().toISOString(),
+    })),
+  );
+}
+
+export async function createBehaviorTicket(input: {
+  subjectName: string;
+  category: string;
+  severity: OversightSeverity;
+  note: string;
+  evidenceUris: string[];
+  locationName?: string | null;
+  linkedEmployeeId?: string | null;
+}) {
+  const evidenceUrls = await uploadOversightEvidenceUris(input.evidenceUris);
+
+  const { data, error } = await supabase.rpc('create_behavior_ticket', {
+    p_category: input.category,
+    p_evidence_urls: evidenceUrls,
+    p_linked_employee_id: input.linkedEmployeeId ?? null,
+    p_location_name: input.locationName ?? null,
+    p_note: input.note,
+    p_severity: input.severity,
+    p_subject_name: input.subjectName,
+  });
+
+  throwIfError(error);
+  return data as {
+    success?: boolean;
+    ticket_id?: string;
+    ticket_number?: string;
+    error?: string;
+  } | null;
+}
+
+export async function createMaterialTicket(input: {
+  subjectName: string;
+  category: string;
+  materialIssueType: OversightMaterialIssueType;
+  severity: OversightSeverity;
+  note: string;
+  evidenceUris: string[];
+  batchNumber?: string | null;
+  orderedQuantity?: number | null;
+  receivedQuantity?: number | null;
+  returnQuantity?: number | null;
+  locationName?: string | null;
+  sourceVisitorId?: string | null;
+  inspectionOutcome?: 'approved' | 'rejected' | null;
+}) {
+  const evidenceUrls = await uploadOversightEvidenceUris(input.evidenceUris);
+
+  const { data, error } = await supabase.rpc('create_material_ticket', {
+    p_batch_number: input.batchNumber ?? null,
+    p_category: input.category,
+    p_evidence_urls: evidenceUrls,
+    p_inspection_outcome: input.inspectionOutcome ?? null,
+    p_location_name: input.locationName ?? null,
+    p_material_issue_type: input.materialIssueType,
+    p_note: input.note,
+    p_ordered_quantity: input.orderedQuantity ?? null,
+    p_received_quantity: input.receivedQuantity ?? null,
+    p_return_quantity: input.returnQuantity ?? null,
+    p_severity: input.severity,
+    p_source_visitor_id: input.sourceVisitorId ?? null,
+    p_subject_name: input.subjectName,
+  });
+
+  throwIfError(error);
+  return data as {
+    success?: boolean;
+    ticket_id?: string;
+    ticket_number?: string;
+    return_ticket_id?: string;
+    return_ticket_number?: string;
+    error?: string;
+  } | null;
+}
+
+export async function updateOversightTicketStatus(
+  ticketId: string,
+  status: OversightTicketStatus,
+  resolutionNotes?: string,
+) {
+  const { data, error } = await supabase.rpc('update_oversight_ticket_status', {
+    p_resolution_notes: resolutionNotes ?? null,
+    p_status: status,
+    p_ticket_id: ticketId,
+  });
+
+  throwIfError(error);
+  return data as {
+    success?: boolean;
+    ticket_id?: string;
+    ticket_number?: string;
+    status?: OversightTicketStatus;
+    error?: string;
+  } | null;
+}
+
+export async function flagHrmsGeoFenceBreach(input: {
+  employeeId: string;
+  location: GuardLocationSnapshot;
+}) {
+  const { data, error } = await supabase.rpc('flag_employee_geo_breach', {
+    p_employee_id: input.employeeId,
+    p_latitude: input.location.latitude,
+    p_longitude: input.location.longitude,
+    p_captured_at: input.location.capturedAt,
+    p_distance: input.location.distanceFromAssignedSite,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  return data as { success?: boolean; error?: string } | null;
+}
+

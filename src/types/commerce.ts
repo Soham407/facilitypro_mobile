@@ -107,6 +107,7 @@ export interface SupplierPORecord {
   status: SupplierPOStatus;
   vehicleDetails: string | null;
   dispatchNotes: string | null;
+  proofOfDeliveryUri: string | null;
   createdAt: string;
 }
 

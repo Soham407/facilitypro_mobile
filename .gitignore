@@ -37,6 +37,13 @@ out.log
 # typescript
 *.tsbuildinfo
 
+# local AI/dev tooling
+.agents/
+.claude/
+.gemini/
+.mcp.json
+skills-lock.json
+
 # generated native folders
 /ios
 /android

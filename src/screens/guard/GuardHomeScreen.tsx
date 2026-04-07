@@ -1,5 +1,15 @@
-import { useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  AppState,
+  Modal,
+  Pressable,
+  StyleSheet,
+  Switch,
+  Text,
+  Vibration,
+  View,
+} from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -15,12 +25,18 @@ import { BorderRadius, Spacing } from '../../constants/spacing';
 import { FontFamily, FontSize } from '../../constants/typography';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { capturePhoto } from '../../lib/media';
-import { fetchGuardVisitors, isPreviewProfile, startGuardPanicAlert } from '../../lib/mobileBackend';
+import {
+  fetchGuardVisitors,
+  fetchPanicAlertStatus,
+  isPreviewProfile,
+  streamPanicAlertLocation,
+} from '../../lib/mobileBackend';
 import {
   calculateDistanceMeters,
   getCurrentLocationFix,
   requestGeoFencePermissions,
 } from '../../lib/location';
+import { consumePendingInactivitySos } from '../../lib/patrolTask';
 import type { GuardTabParamList } from '../../navigation/types';
 import { useAppStore } from '../../store/useAppStore';
 import { useGuardStore } from '../../store/useGuardStore';
@@ -51,6 +67,7 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
   const profile = useAppStore((state) => state.profile);
   const dutyStatus = useGuardStore((state) => state.dutyStatus);
   const isOfflineMode = useGuardStore((state) => state.isOfflineMode);
+  const isNetworkOnline = useGuardStore((state) => state.isNetworkOnline);
   const offlineQueue = useGuardStore((state) => state.offlineQueue);
   const lastSyncAt = useGuardStore((state) => state.lastSyncAt);
   const attendanceLog = useGuardStore((state) => state.attendanceLog);
@@ -60,6 +77,7 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
   const lastKnownLocation = useGuardStore((state) => state.lastKnownLocation);
   const setOfflineMode = useGuardStore((state) => state.setOfflineMode);
   const rememberLocation = useGuardStore((state) => state.rememberLocation);
+  const hydrateVisitorLog = useGuardStore((state) => state.hydrateVisitorLog);
   const clockIn = useGuardStore((state) => state.clockIn);
   const clockOut = useGuardStore((state) => state.clockOut);
   const triggerSos = useGuardStore((state) => state.triggerSos);
@@ -67,7 +85,7 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
   const flushOfflineQueue = useGuardStore((state) => state.flushOfflineQueue);
   const signOut = useAppStore((state) => state.signOut);
   const previewMode = isPreviewProfile(profile);
-  const usePreviewFlow = previewMode || isOfflineMode;
+  const useLocalQueueFlow = previewMode || isOfflineMode || !isNetworkOnline;
 
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const sosCameraRef = useRef<CameraView | null>(null);
@@ -80,20 +98,29 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
   const [pendingSosLocation, setPendingSosLocation] = useState<GuardLocationSnapshot | null>(
     null,
   );
+  const [showInactivityWarning, setShowInactivityWarning] = useState(false);
+  const warningShownRef = useRef(false);
+  const checkCounterRef = useRef(0);
 
   const visitorsQuery = useQuery({
     queryKey: ['guard', 'visitors', profile?.userId],
     queryFn: () => fetchGuardVisitors(true),
-    enabled: Boolean(profile?.userId) && !usePreviewFlow,
+    enabled: Boolean(profile?.userId) && !previewMode && !isOfflineMode && isNetworkOnline,
     refetchInterval: 10000,
   });
 
+  useEffect(() => {
+    if (visitorsQuery.data) {
+      void hydrateVisitorLog(visitorsQuery.data);
+    }
+  }, [hydrateVisitorLog, visitorsQuery.data]);
+
   const pendingVisitors = useMemo(
     () =>
-      usePreviewFlow
+      useLocalQueueFlow
         ? visitorLog.filter((entry) => entry.status === 'inside').length
         : (visitorsQuery.data ?? []).filter((entry) => entry.status === 'inside').length,
-    [usePreviewFlow, visitorLog, visitorsQuery.data],
+    [useLocalQueueFlow, visitorLog, visitorsQuery.data],
   );
 
   const recentSosCount = useMemo(() => getTodayCount(sosEvents), [sosEvents]);
@@ -102,6 +129,35 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
     () => attendanceLog.find((entry) => entry.photoUri)?.photoUri ?? profile?.employeePhotoUrl ?? null,
     [attendanceLog, profile?.employeePhotoUrl],
   );
+  const activeSosEvent = useMemo(
+    () => sosEvents.find((event) => event.streamingActive && event.panicAlertId) ?? null,
+    [sosEvents],
+  );
+
+  function createLocationSnapshot(latitude: number, longitude: number): GuardLocationSnapshot {
+    const assignedLocation = useAppStore.getState().profile?.assignedLocation;
+
+    let distanceFromAssignedSite: number | null = null;
+    let withinGeoFence = true;
+
+    if (assignedLocation?.latitude != null && assignedLocation.longitude != null) {
+      distanceFromAssignedSite = calculateDistanceMeters(
+        latitude,
+        longitude,
+        assignedLocation.latitude,
+        assignedLocation.longitude,
+      );
+      withinGeoFence = distanceFromAssignedSite <= assignedLocation.geoFenceRadius;
+    }
+
+    return {
+      latitude,
+      longitude,
+      capturedAt: new Date().toISOString(),
+      distanceFromAssignedSite,
+      withinGeoFence,
+    };
+  }
 
   async function buildLocationSnapshot() {
     const permissions = await requestGeoFencePermissions();
@@ -111,31 +167,7 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
     }
 
     const fix = await getCurrentLocationFix();
-    const assignedLocation = profile?.assignedLocation;
-
-    let distanceFromAssignedSite: number | null = null;
-    let withinGeoFence = true;
-
-    if (
-      assignedLocation?.latitude != null &&
-      assignedLocation.longitude != null
-    ) {
-      distanceFromAssignedSite = calculateDistanceMeters(
-        fix.coords.latitude,
-        fix.coords.longitude,
-        assignedLocation.latitude,
-        assignedLocation.longitude,
-      );
-      withinGeoFence = distanceFromAssignedSite <= assignedLocation.geoFenceRadius;
-    }
-
-    const snapshot: GuardLocationSnapshot = {
-      latitude: fix.coords.latitude,
-      longitude: fix.coords.longitude,
-      capturedAt: new Date().toISOString(),
-      distanceFromAssignedSite,
-      withinGeoFence,
-    };
+    const snapshot = createLocationSnapshot(fix.coords.latitude, fix.coords.longitude);
 
     await rememberLocation(snapshot);
     return snapshot;
@@ -224,24 +256,17 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
     setIsBusy(false);
   };
 
+  const handlePatrolReset = async () => {
+    await resetPatrolClock();
+    setShowInactivityWarning(false);
+    warningShownRef.current = false;
+  };
+
   const submitSosAlert = async (options: {
     location: GuardLocationSnapshot;
     note: string;
     photoUri: string;
   }) => {
-    if (!usePreviewFlow) {
-      const backendResult = await startGuardPanicAlert({
-        alertType: 'panic',
-        note: options.note,
-        location: options.location,
-        photoUri: options.photoUri,
-      });
-
-      if (backendResult?.success === false) {
-        throw new Error(backendResult.error ?? 'SOS could not be sent.');
-      }
-    }
-
     const result = await triggerSos({
       alertType: 'panic',
       note: options.note,
@@ -250,11 +275,148 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
     });
 
     setMessage(
-      usePreviewFlow && result.queued
+      useLocalQueueFlow && result.queued
         ? 'SOS recorded offline with photo evidence. It is waiting in the sync queue.'
         : 'SOS alert recorded with live location and sent into the supervisor escalation flow.',
     );
   };
+
+  useEffect(() => {
+    const handleForegroundRecovery = (nextState: string) => {
+      if (nextState !== 'active' || useGuardStore.getState().dutyStatus !== 'on_duty') {
+        return;
+      }
+
+      void (async () => {
+        const pending = await consumePendingInactivitySos();
+
+        if (!pending) {
+          return;
+        }
+
+        try {
+          const snapshot = createLocationSnapshot(pending.latitude, pending.longitude);
+          const guardState = useGuardStore.getState();
+          await guardState.rememberLocation(snapshot);
+          await guardState.triggerSos({
+            alertType: 'inactivity',
+            note: 'Auto-inactivity: no patrol movement detected for 30 minutes.',
+            location: snapshot,
+            photoUri: null,
+          });
+        } catch {
+          // Leave the UI quiet if the automatic recovery flow cannot complete.
+        }
+      })();
+    };
+
+    handleForegroundRecovery(AppState.currentState);
+    const subscription = AppState.addEventListener('change', handleForegroundRecovery);
+
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
+    if (dutyStatus !== 'on_duty') {
+      warningShownRef.current = false;
+      checkCounterRef.current = 0;
+      setShowInactivityWarning(false);
+      return;
+    }
+
+    warningShownRef.current = false;
+    checkCounterRef.current = 0;
+
+    const intervalId = setInterval(() => {
+      void (async () => {
+        checkCounterRef.current += 1;
+        const currentProfile = useAppStore.getState().profile;
+
+        if (checkCounterRef.current % 5 === 0 && !isPreviewProfile(currentProfile)) {
+          try {
+            const fix = await getCurrentLocationFix();
+            const snapshot = createLocationSnapshot(fix.coords.latitude, fix.coords.longitude);
+            await useGuardStore.getState().updatePatrolLocation(snapshot);
+          } catch {
+            // If GPS is unavailable we still allow manual patrol resets to keep working.
+          }
+        }
+
+        const guardState = useGuardStore.getState();
+        const elapsed = guardState.lastPatrolResetAt
+          ? Date.now() - new Date(guardState.lastPatrolResetAt).getTime()
+          : 0;
+
+        if (elapsed < 25 * 60 * 1000 && warningShownRef.current) {
+          warningShownRef.current = false;
+          setShowInactivityWarning(false);
+        }
+
+        if (elapsed >= 30 * 60 * 1000) {
+          try {
+            await guardState.triggerSos({
+              alertType: 'inactivity',
+              note: 'Auto-inactivity: no patrol movement detected for 30 minutes.',
+              location: guardState.lastKnownLocation,
+              photoUri: null,
+            });
+            await guardState.resetPatrolClock();
+            setShowInactivityWarning(false);
+            warningShownRef.current = false;
+          } catch {
+            // Avoid interrupting the shift UI if the auto-SOS request cannot be sent.
+          }
+          return;
+        }
+
+        if (elapsed >= 25 * 60 * 1000 && !warningShownRef.current) {
+          warningShownRef.current = true;
+          Vibration.vibrate([500, 200, 500, 200, 500]);
+          setShowInactivityWarning(true);
+        }
+      })();
+    }, 60_000);
+
+    return () => {
+      clearInterval(intervalId);
+      warningShownRef.current = false;
+      checkCounterRef.current = 0;
+    };
+  }, [dutyStatus]);
+
+  useEffect(() => {
+    if (!activeSosEvent?.panicAlertId || isPreviewProfile(useAppStore.getState().profile)) {
+      return;
+    }
+
+    const alertId = activeSosEvent.panicAlertId;
+    const eventId = activeSosEvent.id;
+    const streamLocation = () => {
+      void (async () => {
+        try {
+          const fix = await getCurrentLocationFix();
+          const snapshot = createLocationSnapshot(fix.coords.latitude, fix.coords.longitude);
+          const guardState = useGuardStore.getState();
+          await guardState.rememberLocation(snapshot);
+          await streamPanicAlertLocation(alertId, snapshot);
+
+          const status = await fetchPanicAlertStatus(alertId);
+          if (status === 'resolved') {
+            await guardState.stopSosStreaming(eventId);
+          }
+        } catch {
+          // Keep the best-effort location stream quiet during temporary failures.
+        }
+      })();
+    };
+
+    streamLocation();
+    const intervalId = setInterval(streamLocation, 30_000);
+
+    return () => clearInterval(intervalId);
+  }, [activeSosEvent?.id, activeSosEvent?.panicAlertId]);
+
+  const [activeSosEventId, setActiveSosEventId] = useState<string | null>(null);
 
   const handleTriggerSos = async () => {
     if (isBusy) {
@@ -268,6 +430,21 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
       const location = await buildLocationSnapshot();
       setPendingSosLocation(location);
 
+      const result = await triggerSos({
+        alertType: 'panic',
+        note: 'Guard manually triggered the panic workflow. Photo evidence capture is pending.',
+        location,
+        photoUri: null,
+      });
+
+      setMessage(
+        useLocalQueueFlow && result.queued
+          ? 'SOS recorded offline. Opening camera for evidence.'
+          : 'SOS alert recorded with live location. Opening camera for evidence.'
+      );
+      
+      setActiveSosEventId(result.eventId);
+
       const permission =
         cameraPermission?.granted === true
           ? cameraPermission
@@ -278,13 +455,9 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
           throw new Error('Camera access is required to auto-capture SOS evidence.');
         }
 
-        await submitSosAlert({
-          location,
-          note:
-            'Guard manually triggered the panic workflow. The latest recorded guard photo was attached because live SOS capture permission was unavailable.',
-          photoUri: latestGuardEvidencePhotoUri,
-        });
+        await useGuardStore.getState().attachSosEvidence(result.eventId, latestGuardEvidencePhotoUri);
         setPendingSosLocation(null);
+        setActiveSosEventId(null);
         setIsBusy(false);
         return;
       }
@@ -292,13 +465,14 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
       setIsSosCaptureOpen(true);
     } catch (error) {
       setPendingSosLocation(null);
+      setActiveSosEventId(null);
       setMessage(error instanceof Error ? error.message : 'SOS alert could not be created.');
       setIsBusy(false);
     }
   };
 
   const handleSosCameraReady = async () => {
-    if (hasCapturedSosRef.current || !pendingSosLocation) {
+    if (hasCapturedSosRef.current || !pendingSosLocation || !activeSosEventId) {
       return;
     }
 
@@ -317,38 +491,31 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
         throw new Error('SOS evidence could not be captured. Please allow camera access first.');
       }
 
-      await submitSosAlert({
-        location: pendingSosLocation,
-        note: capturedPhoto?.uri
-          ? 'Guard manually triggered the panic workflow. SOS evidence was captured automatically.'
-          : 'Guard manually triggered the panic workflow. The latest recorded guard photo was attached because live SOS capture did not return an image.',
-        photoUri,
-      });
+      await useGuardStore.getState().attachSosEvidence(activeSosEventId, photoUri);
+      setMessage('SOS evidence attached successfully.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'SOS alert could not be created.');
     } finally {
       closeSosCapture();
       setIsBusy(false);
+      setActiveSosEventId(null);
     }
   };
 
   const handleSosCameraMountError = async (messageText?: string) => {
     try {
-      if (!pendingSosLocation || !latestGuardEvidencePhotoUri) {
+      if (!pendingSosLocation || !latestGuardEvidencePhotoUri || !activeSosEventId) {
         throw new Error(messageText || 'SOS camera could not start.');
       }
 
-      await submitSosAlert({
-        location: pendingSosLocation,
-        note:
-          'Guard manually triggered the panic workflow. The latest recorded guard photo was attached because live SOS capture could not start.',
-        photoUri: latestGuardEvidencePhotoUri,
-      });
+      await useGuardStore.getState().attachSosEvidence(activeSosEventId, latestGuardEvidencePhotoUri);
+      setMessage('SOS fallback evidence attached successfully.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'SOS alert could not be created.');
     } finally {
       closeSosCapture();
       setIsBusy(false);
+      setActiveSosEventId(null);
     }
   };
 
@@ -358,10 +525,15 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
 
     try {
       const syncedCount = await flushOfflineQueue();
+      const remainingCount = useGuardStore.getState().offlineQueue.length;
       setMessage(
         syncedCount
-          ? `${syncedCount} queued action${syncedCount === 1 ? '' : 's'} reconciled locally and cleared from the offline queue.`
-          : 'Nothing is waiting in the offline queue.',
+          ? remainingCount
+            ? `Replayed ${syncedCount} queued action${syncedCount === 1 ? '' : 's'}. ${remainingCount} still need a live backend path or another retry.`
+            : `Replayed ${syncedCount} queued action${syncedCount === 1 ? '' : 's'} successfully.`
+          : remainingCount
+            ? 'Queued actions are still waiting for a live connection or a replayable backend contract.'
+            : 'Nothing is waiting in the offline queue.',
       );
     } finally {
       setIsSyncing(false);
@@ -388,7 +560,16 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
               {profile?.assignedLocation?.locationName ?? 'Assigned site pending'}
             </Text>
           </View>
-          <StatusChip label={isOfflineMode ? 'Offline mode' : 'Live sync'} tone={isOfflineMode ? 'warning' : 'info'} />
+          <StatusChip
+            label={
+              isOfflineMode
+                ? 'Offline test mode'
+                : !isNetworkOnline
+                  ? 'Offline'
+                  : 'Live sync'
+            }
+            tone={isOfflineMode || !isNetworkOnline ? 'warning' : 'info'}
+          />
         </View>
         <Text style={[styles.heroCaption, { color: colors.mutedForeground }]}>
           Employee code: {profile?.employeeCode ?? 'Pending'} - Last patrol reset:{' '}
@@ -409,6 +590,23 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
           />
         </View>
       </InfoCard>
+
+      {showInactivityWarning ? (
+        <View
+          style={[
+            styles.inactivityWarning,
+            {
+              backgroundColor: colors.warning,
+              borderColor: colors.warning,
+            },
+          ]}
+        >
+          <AlertTriangle color={colors.warningForeground} size={20} />
+          <Text style={[styles.inactivityWarningText, { color: colors.warningForeground }]}>
+            Inactivity warning - SOS will be sent in 5 minutes. Press "I am on duty" to reset.
+          </Text>
+        </View>
+      ) : null}
 
       <Pressable
         accessibilityRole="button"
@@ -490,7 +688,7 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
           <View style={styles.toggleCopy}>
             <Text style={[styles.toggleTitle, { color: colors.foreground }]}>Offline testing mode</Text>
             <Text style={[styles.toggleCaption, { color: colors.mutedForeground }]}>
-              Queue attendance, checklist, visitor, and SOS actions locally until you sync them.
+              Force local queueing while you test offline recovery. Real network loss is handled automatically.
             </Text>
           </View>
           <Switch
@@ -501,18 +699,19 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
           />
         </View>
         <Text style={[styles.syncLine, { color: colors.mutedForeground }]}>
-          Last successful sync: {formatTimestamp(lastSyncAt)}
+          Connection: {isNetworkOnline ? 'Online' : 'Offline'} | Last successful sync:{' '}
+          {formatTimestamp(lastSyncAt)}
         </Text>
         <View style={styles.heroActions}>
           <ActionButton
             label="I am on duty"
             variant="secondary"
-            onPress={() => void resetPatrolClock()}
+            onPress={() => void handlePatrolReset()}
           />
           <ActionButton
             label={isSyncing ? 'Syncing...' : 'Sync queued actions'}
             variant="ghost"
-            disabled={isOfflineMode || isSyncing}
+            disabled={isOfflineMode || !isNetworkOnline || isSyncing}
             onPress={() => void handleSyncQueue()}
           />
         </View>
@@ -533,6 +732,16 @@ export function GuardHomeScreen({ navigation }: GuardHomeScreenProps) {
             label="Log visitor"
             variant="secondary"
             onPress={() => navigation.navigate('GuardVisitors')}
+          />
+          <ActionButton
+            label="My payslips"
+            variant="ghost"
+            onPress={() => navigation.navigate('GuardStaff', { screen: 'HrmsPayslips' })}
+          />
+          <ActionButton
+            label="My documents"
+            variant="ghost"
+            onPress={() => navigation.navigate('GuardStaff', { screen: 'HrmsDocuments' })}
           />
           <ActionButton
             label="Emergency contacts"
@@ -624,6 +833,20 @@ const styles = StyleSheet.create({
   },
   heroActions: {
     gap: Spacing.base,
+  },
+  inactivityWarning: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    borderRadius: BorderRadius['2xl'],
+    borderWidth: 1,
+    padding: Spacing.base,
+  },
+  inactivityWarningText: {
+    flex: 1,
+    fontFamily: FontFamily.sansMedium,
+    fontSize: FontSize.sm,
+    lineHeight: 20,
   },
   sosCard: {
     borderRadius: BorderRadius['2xl'],

@@ -23,30 +23,35 @@ export type HRMSTabParamList = {
   HRMSDocuments: undefined;
 };
 
+export type HrmsSubStackParamList = {
+  HrmsDashboard: undefined;
+  HrmsAttendance: undefined;
+  HrmsLeave: undefined;
+  HrmsPayslips: undefined;
+  HrmsDocuments: undefined;
+};
+
 export type OversightTabParamList = {
   OversightHome: undefined;
   OversightAlerts: undefined;
   OversightOperations: undefined;
   OversightTickets: undefined;
+  OversightStaff: { screen?: keyof HrmsSubStackParamList } | undefined;
 };
 
 export type GuardTabParamList = {
   GuardHome: undefined;
   GuardChecklist: undefined;
   GuardVisitors: undefined;
+  GuardStaff: { screen?: keyof HrmsSubStackParamList } | undefined;
   GuardContacts: undefined;
-};
-
-export type ResidentTabParamList = {
-  ResidentHome: undefined;
-  ResidentApprovals: undefined;
-  ResidentNotifications: undefined;
 };
 
 export type ServiceTabParamList = {
   ServiceHome: undefined;
   ServiceTasks: undefined;
   ServiceMaterials: undefined;
+  ServiceStaff: { screen?: keyof HrmsSubStackParamList } | undefined;
   ServiceProof: undefined;
 };
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { MapPin, Navigation } from 'lucide-react-native';
+import { CheckCircle2, MapPin, Navigation, Map } from 'lucide-react-native';
+import * as Location from 'expo-location';
 
 import { ActionButton } from '../../components/shared/ActionButton';
 import { InfoCard } from '../../components/shared/InfoCard';
@@ -28,6 +29,7 @@ export function GeoFenceCalibrationScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isRequestingLocation, setIsRequestingLocation] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
 
   useEffect(() => {
     async function loadLocations() {
@@ -51,6 +53,32 @@ export function GeoFenceCalibrationScreen() {
     void loadLocations();
   }, [profile?.assignedLocation?.id]);
 
+  useEffect(() => {
+    if (!permissionState?.foregroundGranted) return;
+
+    let subscription: Location.LocationSubscription | null = null;
+
+    void (async () => {
+      try {
+        subscription = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.High, distanceInterval: 5, timeInterval: 5000 },
+          (location) => {
+            setCurrentPosition({
+              latitude: location.coords.latitude,
+              longitude: location.coords.longitude,
+            });
+          }
+        );
+      } catch {
+        // Fallback to manual refresh if watching fails
+      }
+    })();
+
+    return () => {
+      subscription?.remove();
+    };
+  }, [permissionState?.foregroundGranted]);
+
   const selectedLocation = useMemo(
     () =>
       locations.find((location) => location.id === selectedLocationId) ?? profile?.assignedLocation ?? null,
@@ -71,13 +99,15 @@ export function GeoFenceCalibrationScreen() {
       : null;
 
   const needsBackgroundPermission = Platform.OS === 'android' || Platform.OS === 'ios';
-  const canComplete =
+  const isWithinFence = distanceFromSite !== null && distanceFromSite <= (selectedLocation?.geoFenceRadius ?? 50);
+
+  const canProceedToStep2 = selectedLocation !== null;
+  const canProceedToStep3 =
     Boolean(permissionState?.foregroundGranted) &&
     (!needsBackgroundPermission || Boolean(permissionState?.backgroundGranted)) &&
     Boolean(currentPosition) &&
     Boolean(selectedLocation) &&
-    distanceFromSite !== null &&
-    distanceFromSite <= (selectedLocation?.geoFenceRadius ?? 50);
+    isWithinFence;
 
   const handleRefreshLocation = async () => {
     setIsRequestingLocation(true);
@@ -138,12 +168,24 @@ export function GeoFenceCalibrationScreen() {
     }
   };
 
-  return (
-    <ScreenShell
-      eyebrow="Location setup"
-      title="Calibrate work location"
-      description="Stand at your primary work site and capture a live location fix. We use this baseline to enforce clock-in geo-fences and future background monitoring."
-      footer={
+  const renderFooter = () => {
+    if (step === 1) {
+      return (
+        <View style={styles.footer}>
+          <ActionButton
+            label="Next: Verify location"
+            disabled={!canProceedToStep2}
+            onPress={() => {
+              setStep(2);
+              void handleRefreshLocation();
+            }}
+          />
+        </View>
+      );
+    }
+
+    if (step === 2) {
+      return (
         <View style={styles.footer}>
           <ActionButton
             label={currentPosition ? 'Refresh live location' : 'Grant access and locate me'}
@@ -151,69 +193,141 @@ export function GeoFenceCalibrationScreen() {
             onPress={() => void handleRefreshLocation()}
           />
           <ActionButton
-            label="Complete calibration"
-            loading={isSaving}
-            disabled={!canComplete}
-            onPress={() => void handleComplete()}
+            label="Next: Confirm"
+            variant="secondary"
+            disabled={!canProceedToStep3}
+            onPress={() => setStep(3)}
+          />
+          <ActionButton
+            label="Back"
+            variant="ghost"
+            onPress={() => setStep(1)}
           />
           {permissionState && (!permissionState.canAskAgain || !permissionState.foregroundGranted) ? (
             <ActionButton label="Open device settings" variant="ghost" onPress={() => void Linking.openSettings()} />
           ) : null}
         </View>
-      }
-    >
-      <InfoCard>
-        <View style={styles.locationHeader}>
-          <MapPin color={colors.primary} size={24} />
-          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Select primary work location</Text>
-        </View>
-        <View style={styles.locationList}>
-          {locations.map((location) => {
-            const isSelected = location.id === selectedLocationId;
+      );
+    }
 
-            return (
-              <Pressable
-                key={location.id}
-                onPress={() => setSelectedLocationId(location.id)}
-                style={[
-                  styles.locationChip,
-                  {
-                    backgroundColor: isSelected ? colors.primary : colors.secondary,
-                    borderColor: isSelected ? colors.primary : colors.border,
-                  },
-                ]}
-              >
-                <Text
+    return (
+      <View style={styles.footer}>
+        <ActionButton
+          label="Lock geo-fence and complete"
+          loading={isSaving}
+          onPress={() => void handleComplete()}
+        />
+        <ActionButton
+          label="Back"
+          variant="ghost"
+          disabled={isSaving}
+          onPress={() => setStep(2)}
+        />
+      </View>
+    );
+  };
+
+  return (
+    <ScreenShell
+      eyebrow={`Step ${step} of 3`}
+      title="Calibrate work location"
+      description="Stand at your primary work site and capture a live location fix. We use this baseline to enforce clock-in geo-fences and future background monitoring."
+      footer={renderFooter()}
+    >
+      {errorMessage ? (
+        <InfoCard>
+          <Text style={[styles.errorText, { color: colors.destructive }]}>{errorMessage}</Text>
+        </InfoCard>
+      ) : null}
+
+      {step === 1 ? (
+        <InfoCard>
+          <View style={styles.locationHeader}>
+            <Map color={colors.primary} size={24} />
+            <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Select your primary site</Text>
+          </View>
+          <Text style={[styles.statusText, { color: colors.mutedForeground, marginBottom: Spacing.sm }]}>
+            Choose the location you will be working at from the list below.
+          </Text>
+          <View style={styles.locationList}>
+            {locations.map((location) => {
+              const isSelected = location.id === selectedLocationId;
+
+              return (
+                <Pressable
+                  key={location.id}
+                  onPress={() => setSelectedLocationId(location.id)}
                   style={[
-                    styles.locationChipText,
-                    { color: isSelected ? colors.primaryForeground : colors.foreground },
+                    styles.locationChip,
+                    {
+                      backgroundColor: isSelected ? colors.primary : colors.secondary,
+                      borderColor: isSelected ? colors.primary : colors.border,
+                    },
                   ]}
                 >
-                  {location.locationName}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </InfoCard>
+                  <Text
+                    style={[
+                      styles.locationChipText,
+                      { color: isSelected ? colors.primaryForeground : colors.foreground },
+                    ]}
+                  >
+                    {location.locationName}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </InfoCard>
+      ) : null}
 
-      <InfoCard>
-        <View style={styles.locationHeader}>
-          <Navigation color={colors.info} size={24} />
-          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Calibration status</Text>
-        </View>
-        <Text style={[styles.statusText, { color: colors.mutedForeground }]}>
-          {selectedLocation
-            ? `${selectedLocation.locationName} geo-fence radius: ${selectedLocation.geoFenceRadius}m`
-            : 'Choose a location to continue.'}
-        </Text>
-        <Text style={[styles.statusText, { color: colors.mutedForeground }]}>
-          {currentPosition
-            ? `Live distance from site: ${distanceFromSite ?? '—'}m`
-            : 'Live location has not been captured yet.'}
-        </Text>
-        {errorMessage ? <Text style={[styles.errorText, { color: colors.destructive }]}>{errorMessage}</Text> : null}
-      </InfoCard>
+      {step === 2 ? (
+        <InfoCard>
+          <View style={styles.locationHeader}>
+            <Navigation color={colors.info} size={24} />
+            <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Walk inside the geo-fence</Text>
+          </View>
+          <Text style={[styles.statusText, { color: colors.mutedForeground }]}>
+            {selectedLocation
+              ? `You are calibrating against ${selectedLocation.locationName} (radius: ${selectedLocation.geoFenceRadius}m).`
+              : 'Choose a location to continue.'}
+          </Text>
+          {currentPosition ? (
+            <View style={[styles.wizardBanner, { backgroundColor: isWithinFence ? colors.success : colors.destructive }]}>
+              <Text style={[styles.wizardBannerText, { color: isWithinFence ? colors.successForeground : colors.destructiveForeground }]}>
+                {isWithinFence ? 'Ready! You are within the allowed area.' : 'Move closer to the site. You are outside the fence.'}
+              </Text>
+              <Text style={[styles.wizardBannerText, { color: isWithinFence ? colors.successForeground : colors.destructiveForeground }]}>
+                Distance: {distanceFromSite ?? '—'}m
+              </Text>
+            </View>
+          ) : (
+            <View style={[styles.wizardBanner, { backgroundColor: colors.secondary }]}>
+              <Text style={[styles.wizardBannerText, { color: colors.foreground }]}>
+                Waiting for GPS fix... Grant permissions if prompted.
+              </Text>
+            </View>
+          )}
+        </InfoCard>
+      ) : null}
+
+      {step === 3 ? (
+        <InfoCard>
+          <View style={styles.locationHeader}>
+            <CheckCircle2 color={colors.success} size={24} />
+            <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Ready to lock calibration</Text>
+          </View>
+          <Text style={[styles.statusText, { color: colors.foreground }]}>
+            Site: {selectedLocation?.locationName}
+          </Text>
+          <Text style={[styles.statusText, { color: colors.foreground }]}>
+            Distance from center: {distanceFromSite}m
+          </Text>
+          <Text style={[styles.statusText, { color: colors.mutedForeground, marginTop: Spacing.sm }]}>
+            By completing this step, your device will be linked to this location for attendance and patrol monitoring.
+          </Text>
+        </InfoCard>
+      ) : null}
+
     </ScreenShell>
   );
 }
@@ -226,6 +340,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    marginBottom: Spacing.sm,
   },
   sectionTitle: {
     fontFamily: FontFamily.sansSemiBold,
@@ -250,6 +365,18 @@ const styles = StyleSheet.create({
     fontFamily: FontFamily.sans,
     fontSize: FontSize.sm,
     lineHeight: 20,
+  },
+  wizardBanner: {
+    padding: Spacing.xl,
+    borderRadius: BorderRadius.lg,
+    marginTop: Spacing.md,
+    gap: Spacing.sm,
+    alignItems: 'center',
+  },
+  wizardBannerText: {
+    fontFamily: FontFamily.sansBold,
+    fontSize: FontSize.md,
+    textAlign: 'center',
   },
   errorText: {
     fontFamily: FontFamily.sansMedium,

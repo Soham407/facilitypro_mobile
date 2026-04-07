@@ -60,13 +60,17 @@ const ROLE_COPY: Record<AppRole, { title: string; subtitle: string }> = {
     title: 'Society manager workspace',
     subtitle: 'Operational approvals and monitoring are routed correctly.',
   },
+  ac_technician: {
+    title: 'AC technician workspace',
+    subtitle: 'Before/after evidence and work logging will attach here.',
+  },
+  pest_control_technician: {
+    title: 'Pest control workspace',
+    subtitle: 'PPE and chemical-request flows will build onto this shell.',
+  },
   service_boy: {
     title: 'Service staff workspace',
     subtitle: 'Assigned-task workflows will sit on this entry point.',
-  },
-  resident: {
-    title: 'Resident workspace',
-    subtitle: 'Resident-facing mobile routes are intentionally limited for now.',
   },
   storekeeper: {
     title: 'Storekeeper workspace',
@@ -79,14 +83,6 @@ const ROLE_COPY: Record<AppRole, { title: string; subtitle: string }> = {
   super_admin: {
     title: 'Super admin workspace',
     subtitle: 'Platform controls are ready for later mobile expansion.',
-  },
-  ac_technician: {
-    title: 'AC technician workspace',
-    subtitle: 'Before/after evidence and work logging will attach here.',
-  },
-  pest_control_technician: {
-    title: 'Pest control workspace',
-    subtitle: 'PPE and chemical-request flows will build onto this shell.',
   },
   employee: {
     title: 'Employee workspace',

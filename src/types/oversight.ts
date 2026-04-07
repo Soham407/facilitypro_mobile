@@ -7,11 +7,8 @@ export type OversightAlertStatus = 'active' | 'acknowledged' | 'resolved';
 export type OversightAlertType = 'panic' | 'inactivity' | 'geo_fence_breach';
 export type OversightGeoStatus = 'verified' | 'outside_fence' | 'missing';
 export type OversightAttendanceStatus = 'on_shift' | 'late' | 'completed' | 'absent';
-export type OversightTicketType =
-  | 'behavior'
-  | 'material_quality'
-  | 'material_quantity'
-  | 'return';
+export type OversightTicketType = 'behavior' | 'material' | 'return';
+export type OversightMaterialIssueType = 'quality' | 'quantity';
 export type OversightSeverity = 'low' | 'medium' | 'high' | 'critical';
 export type OversightTicketStatus = 'open' | 'acknowledged' | 'closed';
 
@@ -63,20 +60,35 @@ export interface OversightAttendanceRecord {
 
 export interface OversightTicketRecord {
   id: string;
+  ticketNumber: string | null;
   ticketType: OversightTicketType;
+  materialIssueType: OversightMaterialIssueType | null;
   subjectName: string;
   category: string;
   severity: OversightSeverity;
   status: OversightTicketStatus;
   createdAt: string;
   note: string;
-  evidenceUri: string | null;
+  evidenceUris: string[];
   batchNumber: string | null;
   orderedQuantity: number | null;
   receivedQuantity: number | null;
   shortageQuantity: number | null;
   returnQuantity: number | null;
   locationName: string | null;
+  sourceVisitorId: string | null;
+  parentTicketId: string | null;
+  inspectionOutcome: 'approved' | 'rejected' | null;
+}
+
+export interface OversightMaterialDeliveryRecord {
+  id: string;
+  visitorName: string;
+  purpose: string;
+  vehicleNumber: string;
+  photoUrl: string | null;
+  gateName: string;
+  entryTime: string;
 }
 
 export interface OversightPersistedState {

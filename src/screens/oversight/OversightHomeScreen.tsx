@@ -54,7 +54,7 @@ function formatValue(value: string | null) {
   });
 }
 
-export function OversightHomeScreen(_props: OversightHomeScreenProps) {
+export function OversightHomeScreen({ navigation }: OversightHomeScreenProps) {
   const { colors } = useAppTheme();
   const signOut = useAppStore((state) => state.signOut);
   const profile = useAppStore((state) => state.profile);
@@ -281,6 +281,33 @@ export function OversightHomeScreen(_props: OversightHomeScreenProps) {
             Nothing critical is waiting for supervisor review right now.
           </Text>
         )}
+      </InfoCard>
+
+      <InfoCard>
+        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Quick actions</Text>
+        <View style={styles.actionGroup}>
+          <ActionButton
+            label="Open live alerts"
+            variant="secondary"
+            onPress={() => navigation.navigate('OversightAlerts')}
+          />
+          <ActionButton
+            label="Operations board"
+            variant="secondary"
+            onPress={() => navigation.navigate('OversightOperations')}
+          />
+          <ActionButton
+            label="My payslips"
+            variant="ghost"
+            onPress={() => navigation.navigate('OversightStaff', { screen: 'HrmsPayslips' })}
+          />
+          <ActionButton
+            label="My documents"
+            variant="ghost"
+            onPress={() => navigation.navigate('OversightStaff', { screen: 'HrmsDocuments' })}
+          />
+          <ActionButton label="Sign out" variant="ghost" onPress={() => void signOut()} />
+        </View>
       </InfoCard>
 
       <NotificationInboxCard

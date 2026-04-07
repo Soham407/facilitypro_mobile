@@ -172,6 +172,14 @@ export function BuyerInvoicesScreen(_props: BuyerInvoicesScreenProps) {
                   }}
                 />
                 <ActionButton
+                  label="Download PDF"
+                  variant="ghost"
+                  onPress={() => {
+                    // Logic to open invoice URL or show placeholder
+                    setMessage(`Opening PDF for ${invoice.invoiceNumber}...`);
+                  }}
+                />
+                <ActionButton
                   label="Raise dispute"
                   variant="ghost"
                   disabled={invoice.status === 'disputed'}

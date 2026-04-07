@@ -46,7 +46,7 @@ const FALLBACK_LEAVE_TYPES = [
   },
 ];
 
-interface AttendanceActionInput {
+export interface AttendanceActionInput {
   action: 'check-in' | 'check-out';
   mimeType?: string;
   onboarding: LocalOnboardingState;
@@ -54,7 +54,7 @@ interface AttendanceActionInput {
   selfieUri: string;
 }
 
-interface LeaveSubmissionInput {
+export interface LeaveSubmissionInput {
   fromDate: string;
   leaveTypeCode: string;
   leaveTypeId: string;
@@ -64,7 +64,7 @@ interface LeaveSubmissionInput {
   toDate: string;
 }
 
-interface DocumentUploadInput {
+export interface DocumentUploadInput {
   documentNumber?: string;
   documentType: HrmsDocumentType;
   issueDate?: string;

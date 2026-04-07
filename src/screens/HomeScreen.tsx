@@ -79,6 +79,19 @@ export default function HomeScreen({ colorScheme }: HomeScreenProps) {
           </View>
         </View>
 
+        {/* 6. Sentry Test */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Diagnostics</Text>
+          <TouchableOpacity 
+            style={[styles.outlineButton, { borderColor: colors.destructive }]}
+            onPress={() => {
+              throw new Error("Sentry Test Error from FacilityPro");
+            }}
+          >
+            <Text style={[styles.outlineButtonText, { color: colors.destructive }]}>Test Sentry Crash</Text>
+          </TouchableOpacity>
+        </View>
+
       </ScrollView>
     </SafeAreaView>
   );

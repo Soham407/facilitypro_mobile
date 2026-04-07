@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import * as ImagePicker from 'expo-image-picker';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import { FileBadge2, Images, ShieldEllipsis } from 'lucide-react-native';
@@ -13,6 +12,7 @@ import { BorderRadius, Spacing } from '../../constants/spacing';
 import { FontFamily, FontSize } from '../../constants/typography';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { fetchHrmsDocuments, getHrmsDocumentLabel, uploadHrmsDocument } from '../../lib/hrms';
+import { capturePhoto } from '../../lib/media';
 import type { HRMSTabParamList } from '../../navigation/types';
 import { useAppStore } from '../../store/useAppStore';
 import type { HrmsDocumentType } from '../../types/hrms';
@@ -57,33 +57,12 @@ export function HrmsDocumentsScreen(_props: HrmsDocumentsScreenProps) {
     mutationFn: async (
       source: 'camera' | 'gallery',
     ) => {
-      const permission =
-        source === 'camera'
-          ? await ImagePicker.requestCameraPermissionsAsync()
-          : await ImagePicker.requestMediaLibraryPermissionsAsync();
+      const asset = await capturePhoto({
+        source,
+        allowsEditing: true,
+      });
 
-      if (!permission.granted) {
-        throw new Error(
-          source === 'camera'
-            ? 'Camera permission is required to capture a document.'
-            : 'Gallery permission is required to choose a document.',
-        );
-      }
-
-      const result =
-        source === 'camera'
-          ? await ImagePicker.launchCameraAsync({
-              allowsEditing: true,
-              mediaTypes: ImagePicker.MediaTypeOptions.Images,
-              quality: 0.7,
-            })
-          : await ImagePicker.launchImageLibraryAsync({
-              allowsEditing: true,
-              mediaTypes: ImagePicker.MediaTypeOptions.Images,
-              quality: 0.7,
-            });
-
-      if (result.canceled || !result.assets[0]) {
+      if (!asset) {
         throw new Error('Document selection was cancelled.');
       }
 
@@ -91,10 +70,9 @@ export function HrmsDocumentsScreen(_props: HrmsDocumentsScreenProps) {
         documentNumber,
         documentType,
         issueDate,
-        mimeType: result.assets[0].mimeType ?? undefined,
         notes,
         profile,
-        sourceUri: result.assets[0].uri,
+        sourceUri: asset.uri,
       });
     },
     onSuccess: async () => {

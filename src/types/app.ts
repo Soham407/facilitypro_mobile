@@ -15,7 +15,6 @@ export type AppRole =
   | 'security_supervisor'
   | 'society_manager'
   | 'service_boy'
-  | 'resident'
   | 'storekeeper'
   | 'site_supervisor'
   | 'super_admin'

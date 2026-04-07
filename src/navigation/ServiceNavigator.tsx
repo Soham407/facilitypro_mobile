@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Camera, ClipboardList, House, Package } from 'lucide-react-native';
+import { Camera, ClipboardList, House, Package, UserRound } from 'lucide-react-native';
 
 import { LoadingScreen } from '../components/shared/LoadingScreen';
 import { Spacing } from '../constants/spacing';
@@ -10,8 +10,10 @@ import { ServiceHomeScreen } from '../screens/service/ServiceHomeScreen';
 import { ServiceMaterialsScreen } from '../screens/service/ServiceMaterialsScreen';
 import { ServiceProofScreen } from '../screens/service/ServiceProofScreen';
 import { ServiceTasksScreen } from '../screens/service/ServiceTasksScreen';
+import { HrmsSubNavigator } from './HrmsSubNavigator';
 import { useAppStore } from '../store/useAppStore';
 import { useServiceStore } from '../store/useServiceStore';
+import { useHrmsStore } from '../store/useHrmsStore';
 import type { ServiceTabParamList } from './types';
 
 const Tab = createBottomTabNavigator<ServiceTabParamList>();
@@ -19,12 +21,14 @@ const Tab = createBottomTabNavigator<ServiceTabParamList>();
 export function ServiceNavigator() {
   const { colors } = useAppTheme();
   const profile = useAppStore((state) => state.profile);
-  const bootstrap = useServiceStore((state) => state.bootstrap);
+  const bootstrapService = useServiceStore((state) => state.bootstrap);
+  const bootstrapHrms = useHrmsStore((state) => state.bootstrap);
   const hasHydrated = useServiceStore((state) => state.hasHydrated);
 
   useEffect(() => {
-    void bootstrap(profile);
-  }, [bootstrap, profile]);
+    void bootstrapService(profile);
+    void bootstrapHrms(profile);
+  }, [bootstrapService, bootstrapHrms, profile]);
 
   if (!hasHydrated) {
     return <LoadingScreen />;
@@ -57,8 +61,8 @@ export function ServiceNavigator() {
             return <Package color={color} size={size} />;
           }
 
-          if (route.name === 'ServiceProof') {
-            return <Camera color={color} size={size} />;
+          if (route.name === 'ServiceStaff') {
+            return <UserRound color={color} size={size} />;
           }
 
           return <House color={color} size={size} />;
@@ -72,7 +76,7 @@ export function ServiceNavigator() {
         name="ServiceMaterials"
         options={{ title: 'Materials' }}
       />
-      <Tab.Screen component={ServiceProofScreen} name="ServiceProof" options={{ title: 'Proof' }} />
+      <Tab.Screen component={HrmsSubNavigator} name="ServiceStaff" options={{ title: 'Staff' }} />
     </Tab.Navigator>
   );
 }
